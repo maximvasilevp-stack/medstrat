@@ -1,74 +1,82 @@
 shader_type canvas_item;
 
-// Province id per cell (R8, 0 = water), terrain class per cell (R8), owner palette (256x1 RGBA8),
-// and per-province flags (256x1 RGBA8: r = attackable highlight).
-uniform sampler2D ids : filter_nearest, repeat_disable;
+// Soft cartoon map: terrain class per cell (R8), owner per cell (R8, 0 = nobody),
+// owner colours in a 256x1 palette. One texel = one map cell.
 uniform sampler2D terrain_tex : filter_nearest, repeat_disable;
+uniform sampler2D owner_tex : filter_nearest, repeat_disable;
 uniform sampler2D palette : filter_nearest, repeat_disable;
-uniform sampler2D flags : filter_nearest, repeat_disable;
 uniform ivec2 map_size = ivec2(640, 768);
-uniform int hovered_id = 0;
-uniform int selected_id = 0;
-uniform float owner_mix = 0.55;
+uniform int human_id = 1;
+uniform int hover_owner = 0;
 
-const vec3 COL_DEEP = vec3(0.094, 0.204, 0.376);
-const vec3 COL_SHALLOW = vec3(0.204, 0.376, 0.580);
-const vec3 COL_GRASS = vec3(0.376, 0.549, 0.282);
-const vec3 COL_SAND = vec3(0.769, 0.675, 0.439);
-const vec3 COL_SNOW = vec3(0.839, 0.863, 0.886);
-const vec3 COL_MOUNTAIN = vec3(0.471, 0.439, 0.392);
+const vec3 C_DEEP = vec3(0.29, 0.54, 0.84);
+const vec3 C_SHALLOW = vec3(0.55, 0.745, 0.925);
+const vec3 C_GRASS = vec3(0.61, 0.80, 0.48);
+const vec3 C_SAND = vec3(0.90, 0.86, 0.69);
+const vec3 C_SNOW = vec3(0.93, 0.95, 0.96);
+const vec3 C_MOUNTAIN = vec3(0.95, 0.95, 0.95);
+const vec3 C_MOUNTAIN_EDGE = vec3(0.78, 0.78, 0.80);
+const vec3 C_RIVER = vec3(0.43, 0.67, 0.90);
+const vec3 C_LAKE = vec3(0.36, 0.60, 0.86);
+const vec3 C_VOID = vec3(0.63, 0.67, 0.59);
 
-int id_at(ivec2 c) {
-	c = clamp(c, ivec2(0), map_size - ivec2(1));
-	return int(texelFetch(ids, c, 0).r * 255.0 + 0.5);
+int terrain_at(ivec2 c) {
+	c = clamp(c, ivec2(0), map_size - 1);
+	return int(texelFetch(terrain_tex, c, 0).r * 255.0 + 0.5);
+}
+
+int owner_at(ivec2 c) {
+	c = clamp(c, ivec2(0), map_size - 1);
+	return int(texelFetch(owner_tex, c, 0).r * 255.0 + 0.5);
+}
+
+float hash(ivec2 c) {
+	return fract(sin(dot(vec2(c), vec2(12.9898, 78.233))) * 43758.5453);
 }
 
 void fragment() {
-	ivec2 c = ivec2(UV * vec2(map_size));
-	c = clamp(c, ivec2(0), map_size - ivec2(1));
-	int id = id_at(c);
-	int t = int(texelFetch(terrain_tex, c, 0).r * 255.0 + 0.5);
-	float checker = float((c.x + c.y) & 1) * 0.035;
-	vec3 base;
+	ivec2 c = clamp(ivec2(UV * vec2(map_size)), ivec2(0), map_size - 1);
+	int t = terrain_at(c);
+	int o = owner_at(c);
+	vec3 col;
 	if (t == 0) {
-		base = COL_DEEP;
+		col = C_DEEP;
 	} else if (t == 1) {
-		base = COL_SHALLOW;
+		col = C_SHALLOW;
 	} else if (t == 3) {
-		base = COL_SAND;
+		col = C_SAND;
 	} else if (t == 4) {
-		base = COL_SNOW;
+		col = C_SNOW;
 	} else if (t == 5) {
-		base = COL_MOUNTAIN;
+		bool edge = terrain_at(c + ivec2(1, 0)) != 5 || terrain_at(c - ivec2(1, 0)) != 5
+			|| terrain_at(c + ivec2(0, 1)) != 5 || terrain_at(c - ivec2(0, 1)) != 5;
+		col = edge ? C_MOUNTAIN_EDGE : C_MOUNTAIN;
+	} else if (t == 6) {
+		col = C_RIVER;
+	} else if (t == 7) {
+		col = C_LAKE;
+	} else if (t == 8) {
+		col = C_VOID;
 	} else {
-		base = COL_GRASS;
+		col = C_GRASS;
 	}
-	base += vec3(checker);
-	if (t <= 1) {
-		// sparse animated glints on the water
-		float w = sin(TIME * 1.2 + float(c.x) * 0.9 + float(c.y) * 1.7) * sin(TIME * 0.7 + float(c.y) * 0.5);
-		base += vec3(0.10, 0.12, 0.14) * step(0.985, w);
+	if (t >= 2 && t <= 6) {
+		col += vec3((hash(c) - 0.5) * 0.05);
 	}
-	if (id == 255) {
-		// land outside the playable area: muted terrain, no owner
-		base = mix(base, vec3(0.42, 0.40, 0.38), 0.5);
-	} else if (id > 0) {
-		vec4 own = texelFetch(palette, ivec2(id, 0), 0);
-		base = mix(base, own.rgb, owner_mix);
-		bool border = id_at(c + ivec2(1, 0)) != id || id_at(c - ivec2(1, 0)) != id
-			|| id_at(c + ivec2(0, 1)) != id || id_at(c - ivec2(0, 1)) != id;
-		if (border) {
-			base *= 0.40;
+	if (o > 0) {
+		vec3 oc = texelFetch(palette, ivec2(o, 0), 0).rgb;
+		col = mix(col, oc, 0.78);
+		if (o == human_id && ((c.x + c.y) & 1) == 0) {
+			col *= 0.90;
 		}
-		vec4 fl = texelFetch(flags, ivec2(id, 0), 0);
-		if (fl.r > 0.5) {
-			base = mix(base, vec3(1.0, 0.85, 0.25), 0.30 + 0.15 * sin(TIME * 6.0));
+		bool edge = owner_at(c + ivec2(1, 0)) != o || owner_at(c - ivec2(1, 0)) != o
+			|| owner_at(c + ivec2(0, 1)) != o || owner_at(c - ivec2(0, 1)) != o;
+		if (edge) {
+			col *= 0.55;
 		}
-		if (id == selected_id) {
-			base = mix(base, vec3(1.0), 0.30);
-		} else if (id == hovered_id) {
-			base = mix(base, vec3(1.0), 0.15);
+		if (o == hover_owner) {
+			col = mix(col, vec3(1.0), 0.12);
 		}
 	}
-	COLOR = vec4(base, 1.0);
+	COLOR = vec4(col, 1.0);
 }

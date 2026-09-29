@@ -3,7 +3,7 @@ extends Camera2D
 
 signal right_clicked(screen_pos: Vector2)
 
-const ZOOMS := [2, 3, 4, 6, 8]   # logical screen pixels per map cell
+const ZOOMS := [1, 2, 3, 4, 6]   # logical screen pixels per map cell
 const PAN_SPEED := 700.0          # logical pixels per second
 const EDGE := 6                   # edge-pan zone in logical pixels
 const CLICK_SLOP := 4.0

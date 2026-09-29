@@ -13,6 +13,8 @@ const PALETTE := {
 	"g": Color(0.92, 0.75, 0.25),  # gold
 	"k": Color(0.06, 0.05, 0.05),  # outline
 	"f": Color(1.0, 1.0, 1.0),     # white
+	"y": Color(1.0, 0.92, 0.45),   # bright gold
+	"b": Color(0.35, 0.55, 0.85),  # blue
 }
 
 const CITY := [
@@ -33,6 +35,36 @@ const PORT := [
 	"ddddddd",
 	".ddddd.",
 	"..ddd..",
+]
+
+const TOWER := [
+	"t.t.t.t",
+	"ttttttt",
+	".ttttt.",
+	".twtwt.",
+	".ttttt.",
+	".twtwt.",
+	"ddddddd",
+]
+
+const COIN := [
+	".ggggg.",
+	"gggyggg",
+	"ggyyygg",
+	"ggyyygg",
+	"ggyyygg",
+	"gggyggg",
+	".ggggg.",
+]
+
+const PLUS := [
+	"...f...",
+	"...f...",
+	"...f...",
+	"fffffff",
+	"...f...",
+	"...f...",
+	"...f...",
 ]
 
 const ARMY := [

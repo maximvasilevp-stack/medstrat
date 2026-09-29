@@ -26,17 +26,17 @@ func _ready() -> void:
 	title.add_theme_font_size_override("font_size", 48)
 	box.add_child(title)
 	var sub := Label.new()
-	sub.text = "Пиксельная стратегия по Европе и Средиземноморью"
+	sub.text = "Захвати Европу: расширяйся, строй, побеждай"
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(sub)
 	box.add_child(Control.new())
-	_button(box, "Новая игра (Италия)", func(): get_tree().change_scene_to_file("res://scenes/game.tscn"))
+	_button(box, "Новая игра", func(): get_tree().change_scene_to_file("res://scenes/game.tscn"))
 	var net := _button(box, "Сетевая игра", Callable())
 	net.disabled = true
 	net.tooltip_text = "Появится на этапе 5"
 	_button(box, "Выход", func(): get_tree().quit())
 	var hint := Label.new()
-	hint.text = "ПКМ/СКМ или WASD — двигать карту · колесо — зум · Esc — отмена / меню"
+	hint.text = "ЛКМ — атака · ПКМ/СКМ или WASD — двигать карту · колесо — зум · Esc — меню"
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.set_anchors_and_offsets_preset(PRESET_BOTTOM_WIDE)
 	hint.offset_top = -40
