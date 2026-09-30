@@ -129,7 +129,7 @@ func _ready() -> void:
 	help_panel.add_child(help)
 
 	var hint := Label.new()
-	hint.text = "ЛКМ — атака · ПКМ/СКМ или WASD — двигать карту · колесо / щипок / +− — зум · 1–8 — карточки · T — развитие · F11 — окно/экран · Esc — меню"
+	hint.text = "Тап или клик — атака · перетаскивание — карта · колесо / щипок / +− — зум · 1–8 — карточки · T развитие · G правительство · Esc меню"
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.add_theme_stylebox_override("normal", ThemeFactory.pill(ThemeFactory.PANEL, 6, 12))
 	var hint_box := CenterContainer.new()

@@ -37,6 +37,7 @@ func _init() -> void:
 	test_admin()
 	test_politics()
 	test_government()
+	test_content()
 	test_ranking_and_names()
 	test_determinism()
 	test_soak()
@@ -539,6 +540,59 @@ func test_government() -> void:
 	check(f["history"]["gold"].size() >= n0 + 3, "history samples accumulate")
 	var breakdown: Dictionary = w.income_breakdown(1)
 	check(breakdown.has("Зарплаты") and breakdown["Зарплаты"] <= 0.0, "income breakdown lists salaries")
+
+
+func test_content() -> void:
+	# tables are consistent
+	var Content = preload("res://scripts/sim/content.gd")
+	var valid_keys: Array = Content.MOD_MULT + Content.MOD_ADD + ["cap_flat"]
+	var items := 0
+	for table in [Rules.MINISTERS, Rules.BILLS, Rules.BUILDINGS, Rules.EXTRA_TECHS, Rules.PARTIES, Rules.BUDGET]:
+		for key in table:
+			items += 1
+			for mk in table[key]["mods"]:
+				check(mk in valid_keys, "mod key %s in %s" % [mk, key])
+	for key in Rules.BILLS:
+		for party in Rules.BILLS[key]["support"]:
+			check(Rules.PARTIES.has(party), "bill %s supported by a real party" % key)
+	check(Rules.BILL_ORDER.size() == Rules.BILLS.size() and Rules.BUILDING_ORDER.size() == Rules.BUILDINGS.size() and Rules.MINISTER_ORDER.size() == Rules.MINISTERS.size(), "order lists cover the tables")
+	check(Rules.PARTY_ORDER.size() == 6 and Rules.BILLS.size() >= 30 and Rules.BUILDINGS.size() >= 18 and Rules.MINISTERS.size() >= 14 and Rules.EVENTS.size() >= 20, "plenty of content (%d items)" % items)
+	# modifiers aggregate
+	var w = _quiet(61)
+	var f: Dictionary = w.factions[1]
+	f["gold"] = 1000000.0
+	var m0: Dictionary = w.mods_of(1)
+	check(is_equal_approx(m0["gold"], Rules.PARTIES[f["ruling"]]["mods"].get("gold", 1.0)), "mods start from the ruling party only")
+	w.apply({"type": "hire", "player": 1, "minister": "finance"})
+	check(absf(w.mod(1, "gold") - m0["gold"] * 1.15) < 1e-6 and is_equal_approx(w.mod(1, "salary"), 6.0), "finance minister changes mods")
+	var cap0: float = w.max_troops_of(1)
+	var spawn: int = f["spawn"]
+	check(w.apply({"type": "build", "player": 1, "kind": "arsenal", "cell": spawn})["ok"] and int(f["extra"]["arsenal"]) == 1, "extra building built")
+	check(w.max_troops_of(1) > cap0 + 500.0, "arsenal raises the cap")
+	check(w.building_cost("arsenal", 1) > Rules.BUILDINGS["arsenal"]["cost"], "second arsenal costs more")
+	var coast_ok := false
+	for i in f["border"]:
+		if not map.is_coast(i):
+			check(not w.apply({"type": "build", "player": 1, "kind": "shipyard", "cell": i})["ok"], "shipyard needs a coast")
+			coast_ok = true
+			break
+	check(coast_ok, "found an inland cell for the shipyard test")
+	var rate0: float = w.gold_rate_of(1)
+	w.apply({"type": "budget", "player": 1, "item": "social", "level": 3})
+	check(int(f["budget"]["social"]) == 3 and w.gold_rate_of(1) < rate0 and w.mod(1, "approval") >= 9.0, "budget costs gold and adds approval")
+	w.apply({"type": "budget", "player": 1, "item": "social", "level": 0})
+	check(absf(w.gold_rate_of(1) - rate0) < 1e-6, "budget can be switched off")
+	var t0: int = w.tech_cost(1, "irrigation")
+	check(t0 > 0 and w.apply({"type": "research", "player": 1, "tech": "irrigation"})["ok"] and w.mod(1, "growth") > 1.0, "extra technology researched and applied")
+	check(not w.apply({"type": "research", "player": 1, "tech": "satellites"})["ok"], "satellites need rockets")
+	w._set_owner(spawn, 0)
+	check(int(f["extra"]["arsenal"]) == 0 and absf(w.mod(1, "cap_flat")) < 1e-6, "losing the cell removes the extra building and its effect")
+	var ap: float = f["approval"]
+	check(w.apply({"type": "decree", "player": 1, "kind": "parade"})["ok"] and f["approval"] > ap, "extra decree applies")
+	check(not w.apply({"type": "decree", "player": 1, "kind": "parade"})["ok"], "extra decree has a cooldown")
+	f["bills"]["disarmament"] = true
+	f["mods_dirty"] = true
+	check(w.building_cost("nuke", 1) == Rules.NUKE_COST * 2, "disarmament doubles nuke cost")
 
 
 func test_ranking_and_names() -> void:

@@ -29,6 +29,18 @@ static func think(world, fid: int) -> void:
 	elif f["cells"] > 1500 and not world.has_minister(fid, "general") and f["gold"] >= Rules.MINISTERS["general"]["fee"] * 3:
 		world.apply({"type": "hire", "player": fid, "minister": "general"})
 
+	# extra buildings, bills and ministers now and then
+	if f["cells"] > 800 and world.rng.randf() < 0.25:
+		var key: String = Rules.BUILDING_ORDER[world.rng.randi_range(0, Rules.BUILDING_ORDER.size() - 1)]
+		if int(f["extra"].get(key, 0)) < 2 and f["gold"] >= world.building_cost(key, fid) * 2:
+			var cell := _random_border(world, border)
+			if not Rules.BUILDINGS[key]["coast"] or map.is_coast(cell):
+				world.apply({"type": "build", "player": fid, "kind": key, "cell": cell})
+	if f["cells"] > 1000 and world.rng.randf() < 0.15:
+		var bkey: String = Rules.BILL_ORDER[world.rng.randi_range(0, Rules.BILL_ORDER.size() - 1)]
+		if not world.has_bill(fid, bkey) and world.bill_support(fid, bkey) >= Rules.BILL_MAJORITY and f["gold"] >= Rules.BILLS[bkey]["cost"] * 2:
+			world.apply({"type": "bill", "player": fid, "bill": bkey})
+
 	# buildings and research
 	var wants_bunker := false
 	for o in contacts:
@@ -104,8 +116,9 @@ static func think(world, fid: int) -> void:
 		var score: float = (1.0 + d["troops"] / maxf(1.0, float(d["cells"]))) * (1.0 + d["defense"] * Rules.DEFENSE_BONUS)
 		if d["kind"] == world.Kind.CITY:
 			score *= 0.8
-		if o == world.human and world.has_minister(o, "diplomat"):
-			score *= Rules.DIPLOMAT_RATIO
+		var diplomacy: float = world.mod(o, "diplomacy")
+		if diplomacy > 0.0:
+			score *= 1.0 + (Rules.DIPLOMAT_RATIO - 1.0) * diplomacy
 		score *= 1.0 + world.rng.randf() * 0.2
 		if score < best_score:
 			best_score = score

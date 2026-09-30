@@ -111,7 +111,7 @@ const EVENT_TIMEOUT_TICKS := 300         # first option is taken if the player d
 const BOT_PROPAGANDA_APPROVAL := 40.0
 
 ## Random events: title, text, two choices with effects. Effects: gold, approval, troops_share, tech.
-const EVENTS := [
+const BASE_EVENTS := [
 	{"title": "Засуха", "text": "Неурожай в провинциях. Крестьяне просят помощи из казны.",
 		"choices": [{"text": "Помочь (−2000 золота, +10 одобрение)", "gold": -2000, "approval": 10},
 			{"text": "Пусть справляются сами (−10 одобрение)", "approval": -10}]},
@@ -140,54 +140,36 @@ const EVENTS := [
 
 # --- government: ministers, parliament (Duma), bills, statistics
 const PLAYER_COLORS := ["#F98BA9", "#FF8F45", "#F4D77A", "#B7C96A", "#7FB9E6", "#D6BEEA"]
-const MINISTERS := {
-	"finance": {"name": "Министр финансов", "desc": "+15% золота", "fee": 3000, "salary": 6.0},
-	"general": {"name": "Генерал", "desc": "Фронт продвигается на 20% быстрее", "fee": 4000, "salary": 8.0},
-	"diplomat": {"name": "Дипломат", "desc": "Боты нападают на вас заметно реже", "fee": 3500, "salary": 6.0},
-	"scientist": {"name": "Учёный", "desc": "Технологии на 20% дешевле", "fee": 3500, "salary": 5.0},
-	"propagandist": {"name": "Пропагандист", "desc": "+8 к цели одобрения", "fee": 2500, "salary": 5.0},
-}
-const MINISTER_ORDER := ["finance", "general", "diplomat", "scientist", "propagandist"]
+const Content := preload("res://scripts/sim/content.gd")
+const MINISTERS := Content.MINISTERS
+const MINISTER_ORDER := Content.MINISTER_ORDER
 const FINANCE_BONUS := 0.15
 const GENERAL_BONUS := 0.20
-const DIPLOMAT_RATIO := 1.6              # bots need this much more of an edge to attack a diplomat's country
+const DIPLOMAT_RATIO := 1.6              # bots need this much more of an edge per point of "diplomacy"
 const SCIENTIST_DISCOUNT := 0.20
-const PROPAGANDIST_APPROVAL := 8.0
-
-const PARTIES := {
-	"order": {"name": "Партия порядка", "color": "#F98BA9", "bonus": "+8% роста армии", "who": "казармы, защита, войны, бомбы"},
-	"trade": {"name": "Торговый союз", "color": "#F4D77A", "bonus": "+10% золота", "who": "рынки, порты, налоги, торговля"},
-	"people": {"name": "Народный фронт", "color": "#B7C96A", "bonus": "+6 к цели одобрения", "who": "низкие налоги, довольный народ"},
-	"tech": {"name": "Технократы", "color": "#7FB9E6", "bonus": "−15% к цене технологий", "who": "технологии и города"},
-}
-const PARTY_ORDER := ["order", "trade", "people", "tech"]
+const PARTIES := Content.PARTIES
+const PARTY_ORDER := Content.PARTY_ORDER
 const DUMA_SEATS := 100
 const AGITATION_COST := 2000
 const AGITATION_WEIGHT := 12.0
-const GOV_ORDER_GROWTH := 0.08
-const GOV_TRADE_GOLD := 0.10
-const GOV_PEOPLE_APPROVAL := 6.0
-const GOV_TECH_DISCOUNT := 0.15
-
-const BILLS := {
-	"army_reform": {"name": "Военная реформа", "desc": "+10% к лимиту армии", "cost": 5000, "support": ["order", "tech"]},
-	"free_trade": {"name": "Свободная торговля", "desc": "+10% золота", "cost": 5000, "support": ["trade", "tech"]},
-	"social": {"name": "Социальный пакет", "desc": "+8 к цели одобрения, −5% золота", "cost": 4000, "support": ["people", "trade"]},
-	"science": {"name": "Наука в приоритете", "desc": "−20% к цене технологий", "cost": 4000, "support": ["tech", "people"]},
-	"emergency": {"name": "Чрезвычайное положение", "desc": "+20% роста армии, −10 к цели одобрения", "cost": 6000, "support": ["order"]},
-}
-const BILL_ORDER := ["army_reform", "free_trade", "social", "science", "emergency"]
+const BILLS := Content.BILLS
+const BILL_ORDER := Content.BILL_ORDER
 const BILL_MAJORITY := 50
-const BILL_ARMY_CAP := 0.10
-const BILL_TRADE_GOLD := 0.10
-const BILL_SOCIAL_APPROVAL := 8.0
-const BILL_SOCIAL_GOLD := -0.05
-const BILL_SCIENCE_DISCOUNT := 0.20
-const BILL_EMERGENCY_GROWTH := 0.20
-const BILL_EMERGENCY_APPROVAL := -10.0
+const BUILDINGS := Content.BUILDINGS
+const BUILDING_ORDER := Content.BUILDING_ORDER
+const EXTRA_TECHS := Content.EXTRA_TECHS
+const EXTRA_TECH_ORDER := Content.EXTRA_TECH_ORDER
+const BUDGET := Content.BUDGET
+const BUDGET_ORDER := Content.BUDGET_ORDER
+const BUDGET_COST_PER_CELL := Content.BUDGET_COST_PER_CELL
+const BUDGET_MAX := Content.BUDGET_MAX
+const EXTRA_DECREES := Content.EXTRA_DECREES
+const EXTRA_DECREE_ORDER := Content.EXTRA_DECREE_ORDER
 
 const HISTORY_PERIOD_TICKS := 50         # one statistics sample every 5 s
 const HISTORY_MAX := 180                 # 15 minutes of samples
+
+const EVENTS := BASE_EVENTS + Content.EXTRA_EVENTS
 
 # --- combat
 const CAPTURE_COST_EMPTY := 3.0          # troops per unclaimed cell for a tiny empire...

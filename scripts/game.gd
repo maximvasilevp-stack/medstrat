@@ -93,6 +93,7 @@ func _ready() -> void:
 	camera.zoom_index = 0
 	world_node.add_child(camera)
 	camera.make_current()
+	world_node.camera = camera
 
 	labels = MapLabels.new()
 	add_child(labels)
@@ -102,11 +103,12 @@ func _ready() -> void:
 	hud.setup(world)
 	minimap = Minimap.new()
 	minimap.setup(map, world, camera, container, view.mat)
+	minimap.visible = not (settings != null and settings.mobile)
 	minimap.set_anchors_and_offsets_preset(PRESET_BOTTOM_LEFT)
 	minimap.offset_left = 44
 	minimap.offset_right = 44 + minimap.custom_minimum_size.x
-	minimap.offset_top = -140 - minimap.custom_minimum_size.y
-	minimap.offset_bottom = -140
+	minimap.offset_top = -236 - minimap.custom_minimum_size.y
+	minimap.offset_bottom = -236
 	add_child(minimap)
 	exit_dialog = ExitDialogScene.instantiate()
 	add_child(exit_dialog)
@@ -131,6 +133,7 @@ func _ready() -> void:
 	hud.fire.connect(func(m): world.apply({"type": "fire", "player": human, "minister": m}))
 	hud.agitate.connect(func(p): world.apply({"type": "agitate", "player": human, "party": p}))
 	hud.bill.connect(func(b): world.apply({"type": "bill", "player": human, "bill": b}))
+	hud.budget_changed.connect(func(item, level): world.apply({"type": "budget", "player": human, "item": item, "level": level}))
 	world.bill_result.connect(func(fid, key, passed, support):
 		if fid == human:
 			var name: String = Rules.BILLS[key]["name"]
@@ -174,7 +177,8 @@ func _ready() -> void:
 	world.decree_applied.connect(func(fid, kind):
 		if fid == human:
 			var names := {"propaganda": "Пропаганда", "festival": "Праздник", "mobilize": "Мобилизация"}
-			hud.toast("Указ: %s" % names[kind], Color(0.85, 0.95, 1))
+			var label: String = names.get(kind, Rules.EXTRA_DECREES[kind]["name"] if Rules.EXTRA_DECREES.has(kind) else kind)
+			hud.toast("Указ: %s" % label, Color(0.85, 0.95, 1))
 			_sfx("build"))
 	world.admin_enabled.connect(func(_f):
 		hud.toast("Админ-режим: бесконечные золото и армия, все технологии открыты", Color(1, 0.85, 0.35))
@@ -410,14 +414,15 @@ func _on_election(fid: int, won: bool, approval: float) -> void:
 
 func _on_tech_researched(fid: int, key: String, level: int) -> void:
 	if fid == human:
-		hud.toast("Изучено: %s (уровень %d)" % [Rules.TECHS[key]["name"], level], Color(0.85, 0.75, 1))
+		hud.toast("Изучено: %s (уровень %d)" % [world.tech_def(key)["name"], level], Color(0.85, 0.75, 1))
 		_sfx("build")
 
 
 func _on_building_placed(fid: int, kind: String, _cell: int) -> void:
 	if fid == human:
 		var names := {"city": "Город", "port": "Порт", "defense": "Защита", "market": "Рынок", "barracks": "Казармы", "bunker": "Бункер"}
-		hud.toast("%s: построено" % names[kind], Color(0.75, 1, 0.75))
+		var label: String = names.get(kind, Rules.BUILDINGS[kind]["name"] if Rules.BUILDINGS.has(kind) else kind)
+		hud.toast("%s: построено" % label, Color(0.75, 1, 0.75))
 		_sfx("build")
 
 

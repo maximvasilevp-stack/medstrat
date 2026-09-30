@@ -21,16 +21,18 @@ func _ready() -> void:
 func _on_building_placed(_faction_id: int, kind: String, cell: int) -> void:
 	var rows: Array = PixelSprites.CITY
 	match kind:
-		"port":
+		"port", "shipyard", "customs":
 			rows = PixelSprites.PORT
-		"defense":
+		"defense", "fortress", "hq", "arsenal", "radar", "mine":
 			rows = PixelSprites.TOWER
-		"market":
+		"market", "farm", "granary", "bank", "casino":
 			rows = PixelSprites.MARKET
 		"barracks":
 			rows = PixelSprites.BARRACKS
 		"bunker":
 			rows = PixelSprites.BUNKER
+		"university", "lab":
+			rows = PixelSprites.LAB
 	var s := Sprite2D.new()
 	s.texture = PixelSprites.texture(rows, kind)
 	s.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST

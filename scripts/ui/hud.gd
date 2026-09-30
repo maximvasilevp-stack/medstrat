@@ -19,6 +19,7 @@ signal hire(minister: String)
 signal fire(minister: String)
 signal agitate(party: String)
 signal bill(key: String)
+signal budget_changed(item: String, level: int)
 signal exit_pressed
 signal attack_size_changed(ratio: float)
 signal cancel_attack(target: int)
@@ -37,7 +38,10 @@ const CARDS := [
 	["nuke", "ЯД. БОМБА", PixelSprites.ROCKET, "7", ThemeFactory.LAVENDER],
 	["mega", "MEGA NUKE", PixelSprites.ROCKET, "8", ThemeFactory.LAVENDER],
 ]
-const CARD_SIZE := Vector2(92, 86)
+const CARD_SIZE_DESKTOP := Vector2(84, 84)
+const CARD_SIZE_MOBILE := Vector2(72, 66)
+var CARD_SIZE := CARD_SIZE_DESKTOP
+var mobile := false
 
 var world
 var human: int = 1
@@ -90,6 +94,9 @@ var minister_rows: Dictionary = {}
 var bill_rows: Dictionary = {}
 var stat_charts: Dictionary = {}
 var income_chart
+var building_rows: Dictionary = {}
+var budget_rows: Dictionary = {}
+var budget_total: Label
 var gov_tab_index := 0
 var _tax_syncing := false
 var overlay: Control
@@ -105,6 +112,11 @@ func _ready() -> void:
 	set_anchors_and_offsets_preset(PRESET_FULL_RECT)
 	mouse_filter = MOUSE_FILTER_IGNORE
 	theme = ThemeFactory.make()
+	var settings = get_node_or_null("/root/Settings")
+	mobile = settings != null and settings.mobile
+	if mobile:
+		CARD_SIZE = CARD_SIZE_MOBILE
+		theme.default_font_size = 13
 	card_group.allow_unpress = true
 	_build_top()
 	_build_leaderboard()
@@ -129,12 +141,30 @@ func setup(w) -> void:
 
 # ------------------------------------------------------------------ construction helpers
 
+## Centre a panel of the given size; on small screens it fills the screen with a margin instead.
+func _place_panel(p: Control, w: float, h: float, margin: float = 8.0) -> void:
+	if mobile:
+		p.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+		p.offset_left = margin
+		p.offset_right = -margin
+		p.offset_top = margin + 44.0
+		p.offset_bottom = -margin
+	else:
+		p.set_anchors_and_offsets_preset(PRESET_CENTER)
+		p.offset_left = -w / 2.0
+		p.offset_right = w / 2.0
+		p.offset_top = -h / 2.0
+		p.offset_bottom = h / 2.0
+
 static func _label(text: String, size: int, color: Color = ThemeFactory.TEXT) -> Label:
 	var l := Label.new()
 	l.text = text
 	l.add_theme_font_size_override("font_size", size)
 	l.add_theme_color_override("font_color", color)
 	l.mouse_filter = MOUSE_FILTER_IGNORE
+	if size == 11 and color == ThemeFactory.TEXT_DIM:
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		l.size_flags_horizontal = SIZE_EXPAND_FILL
 	return l
 
 
@@ -181,15 +211,15 @@ func _build_top() -> void:
 
 	timer_bar = _bar(ThemeFactory.LIME.darkened(0.15), 12)
 	timer_bar.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
-	timer_bar.offset_left = -260
-	timer_bar.offset_right = 260
+	timer_bar.offset_left = -110 if mobile else -260
+	timer_bar.offset_right = 110 if mobile else 260
 	timer_bar.offset_top = 14
 	timer_bar.offset_bottom = 26
 	add_child(timer_bar)
 	timer_label = _label("", 12)
 	timer_label.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
-	timer_label.offset_left = -260
-	timer_label.offset_right = 260
+	timer_label.offset_left = -110 if mobile else -260
+	timer_label.offset_right = 110 if mobile else 260
 	timer_label.offset_top = 28
 	timer_label.offset_bottom = 46
 	timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -200,15 +230,15 @@ func _build_top() -> void:
 func _build_leaderboard() -> void:
 	var panel := PanelContainer.new()
 	panel.set_anchors_and_offsets_preset(PRESET_TOP_RIGHT)
-	panel.offset_left = -310
-	panel.offset_right = -12
-	panel.offset_top = 12
-	panel.offset_bottom = 12
+	panel.offset_left = -200 if mobile else -310
+	panel.offset_right = -6 if mobile else -12
+	panel.offset_top = 52 if mobile else 12
+	panel.offset_bottom = panel.offset_top
 	add_child(panel)
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 4)
+	box.add_theme_constant_override("separation", 2 if mobile else 4)
 	panel.add_child(box)
-	box.add_child(_label("ТАБЛИЦА ЛИДЕРОВ", 13))
+	box.add_child(_label("ЛИДЕРЫ" if mobile else "ТАБЛИЦА ЛИДЕРОВ", 11 if mobile else 13))
 	var grid := GridContainer.new()
 	grid.columns = 4
 	grid.add_theme_constant_override("h_separation", 8)
@@ -227,8 +257,8 @@ func _build_leaderboard() -> void:
 		swatch.custom_minimum_size = Vector2(14, 14)
 		swatch.size_flags_vertical = SIZE_SHRINK_CENTER
 		swatch.mouse_filter = MOUSE_FILTER_IGNORE
-		var name := _label("", 13)
-		name.custom_minimum_size = Vector2(150, 0)
+		var name := _label("", 11 if mobile else 13)
+		name.custom_minimum_size = Vector2(80 if mobile else 150, 0)
 		name.clip_text = true
 		var share := _label("", 13)
 		share.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
@@ -240,13 +270,23 @@ func _build_leaderboard() -> void:
 
 func _build_cards() -> void:
 	var bar := HBoxContainer.new()
-	bar.set_anchors_and_offsets_preset(PRESET_BOTTOM_WIDE)
-	bar.offset_top = -214
-	bar.offset_bottom = -130
 	bar.alignment = BoxContainer.ALIGNMENT_CENTER
-	bar.add_theme_constant_override("separation", 8)
+	bar.add_theme_constant_override("separation", 8 if not mobile else 6)
 	bar.mouse_filter = MOUSE_FILTER_IGNORE
-	add_child(bar)
+	if mobile:
+		var cscroll := ScrollContainer.new()
+		cscroll.set_anchors_and_offsets_preset(PRESET_BOTTOM_WIDE)
+		cscroll.offset_top = -196
+		cscroll.offset_bottom = -124
+		cscroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		cscroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+		add_child(cscroll)
+		cscroll.add_child(bar)
+	else:
+		bar.set_anchors_and_offsets_preset(PRESET_BOTTOM_WIDE)
+		bar.offset_top = -214
+		bar.offset_bottom = -130
+		add_child(bar)
 	for d in CARDS:
 		var kind: String = d[0]
 		var b := Button.new()
@@ -337,18 +377,25 @@ func _build_cards() -> void:
 
 func _build_resources() -> void:
 	var panel := PanelContainer.new()
-	panel.set_anchors_and_offsets_preset(PRESET_CENTER_BOTTOM)
-	panel.offset_left = -300
-	panel.offset_right = 300
-	panel.offset_top = -122
-	panel.offset_bottom = -10
+	if mobile:
+		panel.set_anchors_and_offsets_preset(PRESET_BOTTOM_WIDE)
+		panel.offset_left = 6
+		panel.offset_right = -6
+		panel.offset_top = -118
+		panel.offset_bottom = -6
+	else:
+		panel.set_anchors_and_offsets_preset(PRESET_CENTER_BOTTOM)
+		panel.offset_left = -300
+		panel.offset_right = 300
+		panel.offset_top = -122
+		panel.offset_bottom = -10
 	add_child(panel)
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 6)
 	panel.add_child(box)
 
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 30)
+	row.add_theme_constant_override("separation", 12 if mobile else 30)
 	box.add_child(row)
 
 	var army := VBoxContainer.new()
@@ -360,7 +407,7 @@ func _build_resources() -> void:
 	army_row.add_theme_constant_override("separation", 8)
 	army.add_child(army_row)
 	army_row.add_child(_icon(PixelSprites.ARMY, "army", Vector2(22, 26)))
-	army_value = _label("0", 26)
+	army_value = _label("0", 20 if mobile else 26)
 	army_row.add_child(army_value)
 	army_cap = _label("/ 0", 12, ThemeFactory.TEXT_DIM)
 	army_cap.size_flags_vertical = SIZE_SHRINK_END
@@ -371,7 +418,7 @@ func _build_resources() -> void:
 	army.add_child(army_rate)
 
 	var gold := VBoxContainer.new()
-	gold.custom_minimum_size = Vector2(190, 0)
+	gold.custom_minimum_size = Vector2(110 if mobile else 190, 0)
 	gold.add_theme_constant_override("separation", 2)
 	row.add_child(gold)
 	var gold_title := _label("Золото", 10, ThemeFactory.TEXT_DIM)
@@ -382,14 +429,14 @@ func _build_resources() -> void:
 	gold_row.add_theme_constant_override("separation", 8)
 	gold.add_child(gold_row)
 	gold_row.add_child(_icon(PixelSprites.COIN, "coin", Vector2(26, 26)))
-	gold_value = _label("0", 24, Color("#D9731F"))
+	gold_value = _label("0", 18 if mobile else 24, Color("#D9731F"))
 	gold_row.add_child(gold_value)
 	gold_rate = _label("", 11, ThemeFactory.GREEN)
 	gold_rate.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	gold.add_child(gold_rate)
 
 	people_block = Button.new()
-	people_block.custom_minimum_size = Vector2(170, 0)
+	people_block.custom_minimum_size = Vector2(100 if mobile else 170, 0)
 	people_block.tooltip_text = "Народ: налоги, указы, выборы (P)"
 	people_block.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
 	people_block.add_theme_stylebox_override("pressed", StyleBoxEmpty.new())
@@ -404,7 +451,7 @@ func _build_resources() -> void:
 	var people_title := _label("Народ", 10, ThemeFactory.TEXT_DIM)
 	people_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	people.add_child(people_title)
-	approval_value = _label("60%", 22, ThemeFactory.GREEN)
+	approval_value = _label("60%", 18 if mobile else 22, ThemeFactory.GREEN)
 	approval_value.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	people.add_child(approval_value)
 	approval_bar = _bar(ThemeFactory.LIME.darkened(0.15), 6)
@@ -438,8 +485,8 @@ func _build_resources() -> void:
 func _build_attacks_panel() -> void:
 	attacks_panel = PanelContainer.new()
 	attacks_panel.set_anchors_and_offsets_preset(PRESET_CENTER_LEFT)
-	attacks_panel.offset_left = 12
-	attacks_panel.offset_right = 262
+	attacks_panel.offset_left = 6 if mobile else 12
+	attacks_panel.offset_right = 186 if mobile else 262
 	attacks_panel.offset_top = -80
 	attacks_panel.offset_bottom = 80
 	attacks_panel.visible = false
@@ -452,10 +499,10 @@ func _build_attacks_panel() -> void:
 func _build_zoom_buttons() -> void:
 	var box := VBoxContainer.new()
 	box.set_anchors_and_offsets_preset(PRESET_BOTTOM_RIGHT)
-	box.offset_left = -84
-	box.offset_right = -44
-	box.offset_top = -224
-	box.offset_bottom = -140
+	box.offset_left = -50 if mobile else -84
+	box.offset_right = -6 if mobile else -44
+	box.offset_top = -290 if mobile else -224
+	box.offset_bottom = -206 if mobile else -140
 	box.add_theme_constant_override("separation", 4)
 	add_child(box)
 	for d in [["+", 1], ["−", -1]]:
@@ -471,11 +518,7 @@ func _build_zoom_buttons() -> void:
 
 func _build_tech_panel() -> void:
 	tech_panel = PanelContainer.new()
-	tech_panel.set_anchors_and_offsets_preset(PRESET_CENTER)
-	tech_panel.offset_left = -330
-	tech_panel.offset_right = 330
-	tech_panel.offset_top = -250
-	tech_panel.offset_bottom = 250
+	_place_panel(tech_panel, 660, 500)
 	tech_panel.visible = false
 	add_child(tech_panel)
 	var box := VBoxContainer.new()
@@ -497,11 +540,20 @@ func _build_tech_panel() -> void:
 	thint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	thint.custom_minimum_size = Vector2(620, 0)
 	box.add_child(thint)
-	for key in Rules.TECH_ORDER:
-		var t: Dictionary = Rules.TECHS[key]
+	var tscroll := ScrollContainer.new()
+	tscroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	tscroll.size_flags_vertical = SIZE_EXPAND_FILL
+	tscroll.custom_minimum_size = Vector2(0, 220 if mobile else 400)
+	box.add_child(tscroll)
+	var tlist := VBoxContainer.new()
+	tlist.size_flags_horizontal = SIZE_EXPAND_FILL
+	tlist.add_theme_constant_override("separation", 6)
+	tscroll.add_child(tlist)
+	for key in Rules.TECH_ORDER + Rules.EXTRA_TECH_ORDER:
+		var t: Dictionary = world_tech_def(key)
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 10)
-		box.add_child(row)
+		tlist.add_child(row)
 		var text := VBoxContainer.new()
 		text.size_flags_horizontal = SIZE_EXPAND_FILL
 		text.add_theme_constant_override("separation", 0)
@@ -523,11 +575,7 @@ func _build_tech_panel() -> void:
 
 func _build_people_panel() -> void:
 	people_panel = PanelContainer.new()
-	people_panel.set_anchors_and_offsets_preset(PRESET_CENTER)
-	people_panel.offset_left = -330
-	people_panel.offset_right = 330
-	people_panel.offset_top = -250
-	people_panel.offset_bottom = 250
+	_place_panel(people_panel, 660, 580)
 	people_panel.visible = false
 	add_child(people_panel)
 	var box := VBoxContainer.new()
@@ -575,16 +623,28 @@ func _build_people_panel() -> void:
 		taxes.add_child(b)
 		tax_buttons.append(b)
 
-	box.add_child(_label("УКАЗЫ", 12, ThemeFactory.TEXT_DIM))
+	var dscroll := ScrollContainer.new()
+	dscroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	dscroll.custom_minimum_size = Vector2(0, 150)
+	dscroll.size_flags_vertical = SIZE_EXPAND_FILL
+	box.add_child(dscroll)
+	var dlist := VBoxContainer.new()
+	dlist.size_flags_horizontal = SIZE_EXPAND_FILL
+	dlist.add_theme_constant_override("separation", 6)
+	dscroll.add_child(dlist)
+	dlist.add_child(_label("УКАЗЫ", 12, ThemeFactory.TEXT_DIM))
 	var decrees := [
 		["propaganda", "Пропаганда", "+12 одобрение", "%s золота" % Names.short_number(Rules.PROPAGANDA_COST)],
 		["festival", "Праздник", "+20 одобрение, +10% роста армии на минуту", "%s золота" % Names.short_number(Rules.FESTIVAL_COST)],
 		["mobilize", "Мобилизация", "+15% лимита войск сразу, −15 одобрение", "бесплатно"],
 	]
+	for key in Rules.EXTRA_DECREE_ORDER:
+		var d: Dictionary = Rules.EXTRA_DECREES[key]
+		decrees.append([key, d["name"], d["desc"], ("%s золота" % Names.short_number(d["cost"])) if d["cost"] > 0 else "бесплатно"])
 	for d in decrees:
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 10)
-		box.add_child(row)
+		dlist.add_child(row)
 		var text := VBoxContainer.new()
 		text.size_flags_horizontal = SIZE_EXPAND_FILL
 		text.add_theme_constant_override("separation", 0)
@@ -602,11 +662,7 @@ func _build_people_panel() -> void:
 
 func _build_gov_panel() -> void:
 	gov_panel = PanelContainer.new()
-	gov_panel.set_anchors_and_offsets_preset(PRESET_CENTER)
-	gov_panel.offset_left = -390
-	gov_panel.offset_right = 390
-	gov_panel.offset_top = -285
-	gov_panel.offset_bottom = 285
+	_place_panel(gov_panel, 780, 570)
 	gov_panel.visible = false
 	add_child(gov_panel)
 	var box := VBoxContainer.new()
@@ -624,13 +680,22 @@ func _build_gov_panel() -> void:
 	close.custom_minimum_size = Vector2(36, 32)
 	close.pressed.connect(toggle_gov)
 	head.add_child(close)
-	var tabs := HBoxContainer.new()
-	tabs.add_theme_constant_override("separation", 6)
+	var tabs: Container
+	if mobile:
+		var grid := GridContainer.new()
+		grid.columns = 3
+		grid.add_theme_constant_override("h_separation", 6)
+		grid.add_theme_constant_override("v_separation", 6)
+		tabs = grid
+	else:
+		var hb := HBoxContainer.new()
+		hb.add_theme_constant_override("separation", 6)
+		tabs = hb
 	box.add_child(tabs)
 	var group := ButtonGroup.new()
-	for i in 4:
+	for i in 6:
 		var b := Button.new()
-		b.text = ["Госдума", "Министры", "Законы", "Графики"][i]
+		b.text = ["Госдума", "Министры", "Законы", "Постройки", "Бюджет", "Графики"][i]
 		b.toggle_mode = true
 		b.button_group = group
 		b.size_flags_horizontal = SIZE_EXPAND_FILL
@@ -639,11 +704,17 @@ func _build_gov_panel() -> void:
 		b.pressed.connect(func(): show_gov_tab(idx))
 		tabs.add_child(b)
 		gov_tabs.append(b)
-	for i in 4:
+	for i in 6:
+		var scroll := ScrollContainer.new()
+		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		scroll.size_flags_vertical = SIZE_EXPAND_FILL
+		scroll.custom_minimum_size = Vector2(0, 200 if mobile else 440)
+		scroll.visible = i == 0
+		box.add_child(scroll)
 		var page := VBoxContainer.new()
+		page.size_flags_horizontal = SIZE_EXPAND_FILL
 		page.add_theme_constant_override("separation", 6)
-		page.visible = i == 0
-		box.add_child(page)
+		scroll.add_child(page)
 		gov_pages.append(page)
 
 	# --- Duma
@@ -736,8 +807,66 @@ func _build_gov_panel() -> void:
 		row.add_child(b)
 		bill_rows[key] = {"button": b, "support": support}
 
+	# --- extra buildings
+	var builds: VBoxContainer = gov_pages[3]
+	builds.add_child(_label("Выберите постройку и кликните по своей земле. Каждая следующая того же типа дороже на 50 %.", 11, ThemeFactory.TEXT_DIM))
+	for key in Rules.BUILDING_ORDER:
+		var bd: Dictionary = Rules.BUILDINGS[key]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		builds.add_child(row)
+		var text := VBoxContainer.new()
+		text.size_flags_horizontal = SIZE_EXPAND_FILL
+		text.add_theme_constant_override("separation", 0)
+		row.add_child(text)
+		var name := _label(bd["name"], 14)
+		text.add_child(name)
+		text.add_child(_label(bd["desc"], 11, ThemeFactory.TEXT_DIM))
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(170, 34)
+		var kk: String = key
+		b.pressed.connect(func():
+			gov_panel.visible = false
+			mode_selected.emit(kk))
+		row.add_child(b)
+		building_rows[key] = {"button": b, "name": name}
+
+	# --- budget
+	var budget: VBoxContainer = gov_pages[4]
+	budget.add_child(_label("Каждый уровень стоит золота в секунду пропорционально размеру страны. Меняется мгновенно.", 11, ThemeFactory.TEXT_DIM))
+	for key in Rules.BUDGET_ORDER:
+		var bg: Dictionary = Rules.BUDGET[key]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		budget.add_child(row)
+		var text := VBoxContainer.new()
+		text.size_flags_horizontal = SIZE_EXPAND_FILL
+		text.add_theme_constant_override("separation", 0)
+		row.add_child(text)
+		text.add_child(_label(bg["name"], 14))
+		text.add_child(_label(bg["desc"], 11, ThemeFactory.TEXT_DIM))
+		var levels := HBoxContainer.new()
+		levels.add_theme_constant_override("separation", 4)
+		row.add_child(levels)
+		var group2 := ButtonGroup.new()
+		var buttons: Array = []
+		for level in Rules.BUDGET_MAX + 1:
+			var lb := Button.new()
+			lb.text = str(level)
+			lb.toggle_mode = true
+			lb.button_group = group2
+			lb.custom_minimum_size = Vector2(44, 34)
+			var bk: String = key
+			var lv := level
+			lb.pressed.connect(func(): budget_changed.emit(bk, lv))
+			levels.add_child(lb)
+			buttons.append(lb)
+		budget_rows[key] = buttons
+	budget_total = _label("", 13)
+	budget.add_child(budget_total)
+
 	# --- statistics
-	var stats: VBoxContainer = gov_pages[3]
+	var stats: VBoxContainer = gov_pages[5]
 	var grid := GridContainer.new()
 	grid.columns = 2
 	grid.add_theme_constant_override("h_separation", 8)
@@ -745,7 +874,7 @@ func _build_gov_panel() -> void:
 	stats.add_child(grid)
 	for key in ["gold", "troops", "cells", "approval"]:
 		var c = Charts.LineChart.new()
-		c.custom_minimum_size = Vector2(370, 150)
+		c.custom_minimum_size = Vector2(150 if mobile else 370, 120 if mobile else 150)
 		grid.add_child(c)
 		stat_charts[key] = c
 	income_chart = Charts.BarChart.new()
@@ -757,7 +886,7 @@ func _build_gov_panel() -> void:
 func show_gov_tab(i: int) -> void:
 	gov_tab_index = i
 	for k in gov_pages.size():
-		gov_pages[k].visible = k == i
+		gov_pages[k].get_parent().visible = k == i
 		gov_tabs[k].button_pressed = k == i
 	if world != null:
 		_refresh_gov()
@@ -814,6 +943,21 @@ func _refresh_gov() -> void:
 					b.text = "Внести · " + Names.short_number(Rules.BILLS[key]["cost"])
 					b.disabled = f["gold"] < Rules.BILLS[key]["cost"]
 		3:
+			for key in building_rows:
+				var r: Dictionary = building_rows[key]
+				var cost: int = world.building_cost(key, human)
+				var n: int = int(f["extra"].get(key, 0))
+				r["name"].text = Rules.BUILDINGS[key]["name"] + (" ×%d" % n if n > 0 else "")
+				r["button"].text = "Построить · " + Names.short_number(cost)
+				r["button"].disabled = f["gold"] < cost
+		4:
+			for key in budget_rows:
+				var level: int = int(f["budget"].get(key, 0))
+				var buttons: Array = budget_rows[key]
+				for i in buttons.size():
+					buttons[i].button_pressed = (i == level)
+			budget_total.text = "Расходы бюджета: %s золота в секунду" % Names.short_number(world.budget_cost(human))
+		5:
 			var h: Dictionary = f["history"]
 			var titles := {"gold": "Золото", "troops": "Армия", "cells": "Земля (клетки)", "approval": "Одобрение, %"}
 			var colors := {"gold": Color("#D9731F"), "troops": ThemeFactory.PEACH.darkened(0.15), "cells": ThemeFactory.LIME.darkened(0.2), "approval": ThemeFactory.SKY.darkened(0.15)}
@@ -832,10 +976,10 @@ func _refresh_gov() -> void:
 func _build_event_panel() -> void:
 	event_panel = PanelContainer.new()
 	event_panel.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
-	event_panel.offset_left = -260
-	event_panel.offset_right = 260
-	event_panel.offset_top = 100
-	event_panel.offset_bottom = 100
+	event_panel.offset_left = -160 if mobile else -260
+	event_panel.offset_right = 160 if mobile else 260
+	event_panel.offset_top = 60 if mobile else 100
+	event_panel.offset_bottom = event_panel.offset_top
 	event_panel.visible = false
 	event_panel.z_index = 5
 	add_child(event_panel)
@@ -900,7 +1044,7 @@ func _refresh_people() -> void:
 	for kind in decree_buttons:
 		var b: Button = decree_buttons[kind]
 		var cd: float = world.decree_cooldown(human, kind)
-		var cost: int = world.decree_cost(kind)
+		var cost: int = world.decree_cost(human, kind)
 		if cd > 0.0:
 			b.text = "через %d с" % int(ceil(cd))
 			b.disabled = true
@@ -917,11 +1061,17 @@ func toggle_tech() -> void:
 		_refresh_tech()
 
 
+static func world_tech_def(key: String) -> Dictionary:
+	if Rules.TECHS.has(key):
+		return Rules.TECHS[key]
+	return Rules.EXTRA_TECHS[key]
+
+
 func _refresh_tech() -> void:
 	var f: Dictionary = world.factions[human]
 	tech_gold.text = "Золото: " + Names.short_number(f["gold"])
 	for key in tech_rows:
-		var t: Dictionary = Rules.TECHS[key]
+		var t: Dictionary = world_tech_def(key)
 		var level: int = world.tech_level(human, key)
 		var r: Dictionary = tech_rows[key]
 		r["level"].text = "%d/%d" % [level, t["max"]]
@@ -930,7 +1080,7 @@ func _refresh_tech() -> void:
 			b.text = "Изучено"
 			b.disabled = true
 		elif t["req"] != "" and world.tech_level(human, t["req"]) == 0:
-			b.text = "Нужно: " + Rules.TECHS[t["req"]]["name"]
+			b.text = "Нужно: " + world_tech_def(t["req"])["name"]
 			b.disabled = true
 		else:
 			var cost: int = world.tech_cost(human, key)
@@ -975,8 +1125,8 @@ func _build_overlay() -> void:
 	overlay.add_child(dim)
 	var panel := PanelContainer.new()
 	panel.set_anchors_and_offsets_preset(PRESET_CENTER)
-	panel.offset_left = -250
-	panel.offset_right = 250
+	panel.offset_left = -170 if mobile else -250
+	panel.offset_right = 170 if mobile else 250
 	panel.offset_top = -190
 	panel.offset_bottom = 190
 	overlay.add_child(panel)
@@ -1046,7 +1196,11 @@ func set_mode(kind: String) -> void:
 		"nuke", "mega":
 			set_status("Клик по цели: через 3 секунды земля в радиусе станет ничьей и выжженной. Esc — отмена")
 		_:
-			set_status("")
+			if Rules.BUILDINGS.has(kind):
+				var bd: Dictionary = Rules.BUILDINGS[kind]
+				set_status("Клик по %s: %s. Esc — отмена" % ["своему берегу" if bd["coast"] else "своей земле", bd["name"]])
+			else:
+				set_status("")
 
 
 func set_status(text: String) -> void:

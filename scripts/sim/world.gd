@@ -17,11 +17,13 @@ extends RefCounted
 ##   {type="hire", player, minister} / {type="fire", player, minister}
 ##   {type="agitate", player, party}                               campaign for a party until the election
 ##   {type="bill", player, bill}                                   put a bill to the Duma
+##   {type="budget", player, item, level}                          budget allocation 0..3
 ##   {type="admin",  player, code}                               cheat code: infinite resources
 
 const Rules := preload("res://scripts/sim/rules.gd")
 const Names := preload("res://scripts/sim/names.gd")
 const BotBrain := preload("res://scripts/sim/bot_brain.gd")
+const Content := preload("res://scripts/sim/content.gd")
 
 enum Kind { HUMAN, BOT, CITY }
 enum Phase { SPAWN, PLAY, FINISHED }
@@ -146,7 +148,8 @@ func _new_faction(name: String, color: Color, kind: int) -> Dictionary:
 		"approval": Rules.APPROVAL_START, "tax": 1, "next_election": 0, "elections_won": 0, "elections_lost": 0,
 		"loss_until": 0, "festival_until": 0, "propaganda_cd": 0, "festival_cd": 0, "mobilize_cd": 0,
 		"event": {}, "event_until": 0, "next_event": 0, "last_election": "",
-		"staff": {}, "seats": {}, "ruling": "", "agitation": {}, "bills": {},
+		"staff": {}, "seats": {}, "ruling": "", "agitation": {}, "bills": {}, "extra": {}, "budget": {},
+		"mods": {}, "mods_dirty": true,
 		"history": {"gold": PackedFloat32Array(), "troops": PackedFloat32Array(), "cells": PackedFloat32Array(),
 			"approval": PackedFloat32Array(), "income": PackedFloat32Array()},
 		"alive": true, "border": {}, "spawn": -1,
@@ -301,6 +304,9 @@ func _remove_building(cell: int) -> void:
 			f["barracks"] -= 1
 		"bunker":
 			f["bunkers"] -= 1
+		_:
+			f["extra"][b["kind"]] = maxi(0, int(f["extra"].get(b["kind"], 0)) - 1)
+			f["mods_dirty"] = true
 	buildings_at.erase(cell)
 	building_removed.emit(cell)
 
@@ -327,6 +333,50 @@ func tech_level(fid: int, key: String) -> int:
 	return int(factions[fid]["tech"].get(key, 0))
 
 
+## All effects of ministers, bills, extra buildings, extra technologies, the ruling party and the budget.
+func mods_of(fid: int) -> Dictionary:
+	var f: Dictionary = factions[fid]
+	if not f["mods_dirty"]:
+		return f["mods"]
+	var m := Content.default_mods()
+	for key in f["staff"]:
+		if f["staff"][key]:
+			Content.merge_mods(m, Rules.MINISTERS[key]["mods"])
+			m["salary"] += Rules.MINISTERS[key]["salary"]
+	for key in f["bills"]:
+		if f["bills"][key]:
+			Content.merge_mods(m, Rules.BILLS[key]["mods"])
+	for key in f["extra"]:
+		var n: int = f["extra"][key]
+		if n > 0:
+			Content.merge_mods(m, Rules.BUILDINGS[key]["mods"], n)
+	for key in Rules.EXTRA_TECHS:
+		var level: int = int(f["tech"].get(key, 0))
+		if level > 0:
+			Content.merge_mods(m, Rules.EXTRA_TECHS[key]["mods"], level)
+	if f["ruling"] != "" and Rules.PARTIES.has(f["ruling"]):
+		Content.merge_mods(m, Rules.PARTIES[f["ruling"]]["mods"])
+	for key in f["budget"]:
+		var level: int = f["budget"][key]
+		if level > 0:
+			Content.merge_mods(m, Rules.BUDGET[key]["mods"], level)
+	f["mods"] = m
+	f["mods_dirty"] = false
+	return m
+
+
+func mod(fid: int, key: String) -> float:
+	return float(mods_of(fid).get(key, 1.0 if key in Content.MOD_MULT else 0.0))
+
+
+func budget_cost(fid: int) -> float:
+	var f: Dictionary = factions[fid]
+	var levels := 0
+	for key in f["budget"]:
+		levels += int(f["budget"][key])
+	return f["cells"] * Rules.BUDGET_COST_PER_CELL * levels
+
+
 func has_minister(fid: int, key: String) -> bool:
 	return bool(factions[fid]["staff"].get(key, false))
 
@@ -336,26 +386,21 @@ func has_bill(fid: int, key: String) -> bool:
 
 
 func salaries_of(fid: int) -> float:
-	var total := 0.0
-	for key in factions[fid]["staff"]:
-		if factions[fid]["staff"][key]:
-			total += Rules.MINISTERS[key]["salary"]
-	return total
+	return mod(fid, "salary")
 
 
 func tech_discount(fid: int) -> float:
-	var d := 1.0
-	if has_minister(fid, "scientist"):
-		d *= 1.0 - Rules.SCIENTIST_DISCOUNT
-	if factions[fid]["ruling"] == "tech":
-		d *= 1.0 - Rules.GOV_TECH_DISCOUNT
-	if has_bill(fid, "science"):
-		d *= 1.0 - Rules.BILL_SCIENCE_DISCOUNT
-	return d
+	return mod(fid, "tech_cost")
+
+
+func tech_def(key: String) -> Dictionary:
+	if Rules.TECHS.has(key):
+		return Rules.TECHS[key]
+	return Rules.EXTRA_TECHS[key]
 
 
 func tech_cost(fid: int, key: String) -> int:
-	var t: Dictionary = Rules.TECHS[key]
+	var t: Dictionary = tech_def(key)
 	var level := tech_level(fid, key)
 	if level >= t["max"]:
 		return 0
@@ -365,14 +410,19 @@ func tech_cost(fid: int, key: String) -> int:
 ## Parliament seats from the way the country is run, plus campaign money.
 func compute_seats(fid: int) -> Dictionary:
 	var f: Dictionary = factions[fid]
+	var extra: Dictionary = f["extra"]
 	var w := {
-		"order": 20.0 + f["barracks"] * 5.0 + f["defense"] * 4.0 + attacks_of(fid).size() * 3.0 + f["nukes"] * 4.0,
-		"trade": 20.0 + f["markets"] * 5.0 + f["ports"] * 4.0 + f["tax"] * 5.0 + tech_level(fid, "trade") * 4.0,
-		"people": 20.0 + f["approval"] * 0.5 + (3 - f["tax"]) * 6.0,
-		"tech": 20.0 + f["cities"] * 2.0,
+		"order": 20.0 + f["barracks"] * 5.0 + f["defense"] * 4.0 + attacks_of(fid).size() * 3.0 + f["nukes"] * 4.0 + extra.get("fortress", 0) * 3.0 + extra.get("hq", 0) * 3.0,
+		"trade": 20.0 + f["markets"] * 5.0 + f["ports"] * 4.0 + f["tax"] * 5.0 + tech_level(fid, "trade") * 4.0 + extra.get("bank", 0) * 3.0 + extra.get("customs", 0) * 3.0 + extra.get("casino", 0) * 2.0,
+		"people": 20.0 + f["approval"] * 0.5 + (3 - f["tax"]) * 6.0 + extra.get("stadium", 0) * 3.0 + extra.get("temple", 0) * 2.0,
+		"tech": 20.0 + f["cities"] * 2.0 + extra.get("university", 0) * 4.0 + extra.get("lab", 0) * 4.0,
+		"green": 12.0 + extra.get("farm", 0) * 3.0 + extra.get("hospital", 0) * 3.0 + extra.get("granary", 0) * 2.0 + (8.0 if f["nukes"] == 0 else 0.0) + maxf(0.0, f["approval"] - 60.0) * 0.3,
+		"empire": 12.0 + f["cells"] / 400.0 + attacks_of(fid).size() * 4.0 + f["ports"] * 2.0 + extra.get("shipyard", 0) * 3.0 + extra.get("arsenal", 0) * 2.0,
 	}
 	for key in Rules.TECH_ORDER:
 		w["tech"] += tech_level(fid, key) * 4.0
+	for key in Rules.EXTRA_TECH_ORDER:
+		w["tech"] += tech_level(fid, key) * 3.0
 	for party in f["agitation"]:
 		w[party] += f["agitation"][party]
 	var total := 0.0
@@ -406,6 +456,7 @@ func _update_duma(fid: int) -> void:
 			best_seats = f["seats"][party]
 			best = party
 	f["ruling"] = best
+	f["mods_dirty"] = true
 	duma_changed.emit(fid, f["seats"], best)
 
 
@@ -437,7 +488,9 @@ func income_breakdown(fid: int) -> Dictionary:
 		"Налоги": f["cells"] * f["tax"] * Rules.TAX_GOLD_PER_CELL * mult,
 		"Порты": f["ports"] * Rules.PORT_GOLD * mult,
 		"Рынки": f["markets"] * Rules.MARKET_GOLD,
+		"Постройки": mod(fid, "gold_flat"),
 		"Зарплаты": -salaries_of(fid),
+		"Бюджет": -budget_cost(fid),
 	}
 
 
@@ -445,10 +498,8 @@ func max_troops_of(fid: int) -> float:
 	var f: Dictionary = factions[fid]
 	if f["kind"] == Kind.CITY:
 		return f["base_troops"] * Rules.CITY_STATE_MAX_MULT
-	var cap: float = Rules.max_troops(f["cells"], f["cities"]) + f["barracks"] * Rules.BARRACKS_CAP
-	if has_bill(fid, "army_reform"):
-		cap *= 1.0 + Rules.BILL_ARMY_CAP
-	return cap
+	var cap: float = Rules.max_troops(f["cells"], f["cities"]) + f["barracks"] * Rules.BARRACKS_CAP + mod(fid, "cap_flat")
+	return cap * mod(fid, "cap")
 
 
 func approval_factor(fid: int) -> float:
@@ -459,18 +510,14 @@ func approval_factor(fid: int) -> float:
 		m *= Rules.ELECTION_LOSS_GROWTH
 	if tick < f["festival_until"]:
 		m *= Rules.FESTIVAL_GROWTH
-	if f["ruling"] == "order":
-		m *= 1.0 + Rules.GOV_ORDER_GROWTH
-	if has_bill(fid, "emergency"):
-		m *= 1.0 + Rules.BILL_EMERGENCY_GROWTH
-	return m
+	return m * mod(fid, "growth")
 
 
 func growth_of(fid: int) -> float:
 	var f: Dictionary = factions[fid]
 	if f["kind"] == Kind.CITY:
 		return f["troops"] * Rules.CITY_STATE_INTEREST + 1.0
-	var extra: float = tech_level(fid, "conscription") * Rules.CONSCRIPTION_BONUS + f["barracks"] * Rules.BARRACKS_INTEREST
+	var extra: float = tech_level(fid, "conscription") * Rules.CONSCRIPTION_BONUS + f["barracks"] * Rules.BARRACKS_INTEREST + mod(fid, "interest")
 	return Rules.growth_per_sec(f["troops"], f["cells"], f["cities"], extra) * approval_factor(fid)
 
 
@@ -486,15 +533,8 @@ func gold_rate_of(fid: int) -> float:
 	var rate: float = (base + taxes) * (1.0 + tech_level(fid, "trade") * Rules.TRADE_BONUS) + f["markets"] * Rules.MARKET_GOLD
 	if tick < f["loss_until"]:
 		rate *= Rules.ELECTION_LOSS_GOLD
-	if has_minister(fid, "finance"):
-		rate *= 1.0 + Rules.FINANCE_BONUS
-	if f["ruling"] == "trade":
-		rate *= 1.0 + Rules.GOV_TRADE_GOLD
-	if has_bill(fid, "free_trade"):
-		rate *= 1.0 + Rules.BILL_TRADE_GOLD
-	if has_bill(fid, "social"):
-		rate *= 1.0 + Rules.BILL_SOCIAL_GOLD
-	return rate - salaries_of(fid)
+	rate = rate * mod(fid, "gold") + mod(fid, "gold_flat")
+	return rate - salaries_of(fid) - budget_cost(fid)
 
 
 func approval_target(fid: int) -> float:
@@ -502,14 +542,7 @@ func approval_target(fid: int) -> float:
 	var t: float = Rules.APPROVAL_BASE_TARGET - f["tax"] * Rules.TAX_APPROVAL
 	t += minf(Rules.BUILDING_APPROVAL_CAP, f["markets"] * Rules.MARKET_APPROVAL + f["cities"] * Rules.CITY_APPROVAL)
 	t -= minf(Rules.WAR_WEARINESS_CAP, attacks_of(fid).size() * Rules.WAR_WEARINESS)
-	if has_minister(fid, "propagandist"):
-		t += Rules.PROPAGANDIST_APPROVAL
-	if f["ruling"] == "people":
-		t += Rules.GOV_PEOPLE_APPROVAL
-	if has_bill(fid, "social"):
-		t += Rules.BILL_SOCIAL_APPROVAL
-	if has_bill(fid, "emergency"):
-		t += Rules.BILL_EMERGENCY_APPROVAL
+	t += mod(fid, "approval")
 	return clampf(t, 0.0, 100.0)
 
 
@@ -517,13 +550,17 @@ func seconds_to_election(fid: int) -> float:
 	return maxf(0.0, (factions[fid]["next_election"] - tick) * Rules.TICK_DT)
 
 
-func decree_cost(kind: String) -> int:
+func decree_cost(fid: int, kind: String) -> int:
+	var base := 0
 	match kind:
 		"propaganda":
-			return Rules.PROPAGANDA_COST
+			base = Rules.PROPAGANDA_COST
 		"festival":
-			return Rules.FESTIVAL_COST
-	return 0
+			base = Rules.FESTIVAL_COST
+		_:
+			if Rules.EXTRA_DECREES.has(kind):
+				base = int(Rules.EXTRA_DECREES[kind]["cost"])
+	return int(base * mod(fid, "decree_cost"))
 
 
 func decree_cooldown(fid: int, kind: String) -> float:
@@ -536,29 +573,33 @@ func decree_cooldown(fid: int, kind: String) -> float:
 			until = f["festival_cd"]
 		"mobilize":
 			until = f["mobilize_cd"]
+		_:
+			until = int(f.get("decree_cd_" + kind, 0))
 	return maxf(0.0, (until - tick) * Rules.TICK_DT)
 
 
 func capture_cost(attacker: int, target: int, cell: int) -> float:
 	var mult := Rules.terrain_mult(map.terrain[cell]) * Rules.empire_mult(factions[attacker]["cells"])
 	mult *= 1.0 - tech_level(attacker, "logistics") * Rules.LOGISTICS_BONUS
+	mult *= mod(attacker, "capture")
 	if scorched.has(cell):
 		mult *= Rules.SCORCH_COST_MULT
 	if target == 0:
 		return Rules.CAPTURE_COST_EMPTY * mult
 	var d: Dictionary = factions[target]
 	var density: float = d["troops"] / maxf(1.0, float(d["cells"]))
-	var fort: float = 1.0 + d["defense"] * Rules.DEFENSE_BONUS + tech_level(target, "fortification") * Rules.FORTIFICATION_BONUS
+	var fort: float = (1.0 + d["defense"] * Rules.DEFENSE_BONUS + tech_level(target, "fortification") * Rules.FORTIFICATION_BONUS) * mod(target, "defense")
 	return (1.0 + density) * mult * fort
 
 
 func bunker_near(cell: int, exclude: int) -> int:
 	var c := Vector2(map.cell(cell))
-	var r2 := float(Rules.BUNKER_RADIUS * Rules.BUNKER_RADIUS)
 	for b_cell in buildings_at:
 		var b: Dictionary = buildings_at[b_cell]
-		if b["kind"] == "bunker" and b["faction"] != exclude and Vector2(map.cell(b_cell)).distance_squared_to(c) <= r2:
-			return b["faction"]
+		if b["kind"] == "bunker" and b["faction"] != exclude:
+			var r: float = Rules.BUNKER_RADIUS + mod(b["faction"], "shield")
+			if Vector2(map.cell(b_cell)).distance_squared_to(c) <= r * r:
+				return b["faction"]
 	return 0
 
 
@@ -722,7 +763,7 @@ func _politics_second() -> void:
 		f["approval"] = clampf(f["approval"] + (approval_target(id) - f["approval"]) * Rules.APPROVAL_DRIFT, 0.0, 100.0)
 		if f["admin"]:
 			f["approval"] = 100.0
-		if f["approval"] < Rules.UNREST_APPROVAL and tick % Rules.UNREST_PERIOD_TICKS == 0 and f["cells"] > 30:
+		if f["approval"] < Rules.UNREST_APPROVAL + mod(id, "unrest") and tick % Rules.UNREST_PERIOD_TICKS == 0 and f["cells"] > 30:
 			_unrest(id)
 		if tick >= f["next_election"]:
 			_hold_election(id)
@@ -754,7 +795,7 @@ func _hold_election(fid: int) -> void:
 	var f: Dictionary = factions[fid]
 	f["next_election"] = tick + int(Rules.ELECTION_PERIOD * Rules.TICKS_PER_SEC)
 	_update_duma(fid)
-	var won: bool = f["approval"] >= Rules.ELECTION_WIN_APPROVAL or f["admin"]
+	var won: bool = f["approval"] + mod(fid, "election") >= Rules.ELECTION_WIN_APPROVAL or f["admin"]
 	if won:
 		f["elections_won"] += 1
 		f["approval"] = minf(100.0, f["approval"] + Rules.ELECTION_WIN_BONUS)
@@ -789,12 +830,14 @@ func _resolve_event(fid: int, choice: int) -> void:
 		f["tax"] = clampi(f["tax"] + c["tax"], 0, 3)
 	if c.has("tech"):
 		var options: Array = []
-		for key in Rules.TECH_ORDER:
-			if tech_level(fid, key) < Rules.TECHS[key]["max"] and (Rules.TECHS[key]["req"] == "" or tech_level(fid, Rules.TECHS[key]["req"]) > 0):
+		for key in Rules.TECH_ORDER + Rules.EXTRA_TECH_ORDER:
+			var td := tech_def(key)
+			if tech_level(fid, key) < td["max"] and (td["req"] == "" or tech_level(fid, td["req"]) > 0):
 				options.append(key)
 		if not options.is_empty():
 			var key: String = options[rng.randi_range(0, options.size() - 1)]
 			f["tech"][key] = tech_level(fid, key) + 1
+			f["mods_dirty"] = true
 			tech_researched.emit(fid, key, f["tech"][key])
 	f["event"] = {}
 	f["next_event"] = tick + rng.randi_range(Rules.EVENT_MIN_TICKS, Rules.EVENT_MAX_TICKS)
@@ -826,7 +869,7 @@ func _advance_attacks() -> void:
 		var queue: Array = a["queue"]
 		var queued: Dictionary = a["queued"]
 		var target_alive: bool = tgt == 0 or factions[tgt]["alive"]
-		var rate := int(Rules.attack_rate(a["troops"]) * (1.0 + tech_level(att, "tactics") * Rules.TACTICS_BONUS) * (1.0 + Rules.GENERAL_BONUS if has_minister(att, "general") else 1.0))
+		var rate := int(Rules.attack_rate(a["troops"]) * (1.0 + tech_level(att, "tactics") * Rules.TACTICS_BONUS) * mod(att, "attack_rate"))
 		var taken := 0
 		while taken < rate and a["head"] < queue.size() and a["troops"] > 0.0 and target_alive:
 			var head: int = a["head"]
@@ -983,8 +1026,9 @@ func launch_attack(fid: int, target: int, ratio: float, cell: int = -1) -> Strin
 			return "У вас нет берега для отплытия"
 		else:
 			var dist := Vector2(map.cell(from)).distance_to(Vector2(map.cell(cell)))
-			var nav := 1.0 + tech_level(fid, "navigation") * Rules.NAVIGATION_BONUS
-			if dist > Rules.NAVAL_REACH * nav:
+			var nav: float = (1.0 + tech_level(fid, "navigation") * Rules.NAVIGATION_BONUS) * mod(fid, "ship_speed")
+			var reach: float = (1.0 + tech_level(fid, "navigation") * Rules.NAVIGATION_BONUS) * mod(fid, "naval_reach")
+			if dist > Rules.NAVAL_REACH * reach:
 				return "Слишком далеко для высадки (изучите Навигацию)"
 			f["troops"] -= amount
 			var ticks := maxi(5, int(dist / (Rules.SHIP_SPEED * nav)))
@@ -1040,10 +1084,18 @@ func building_cost(kind: String, fid: int = 0) -> int:
 		"bunker":
 			base = Rules.COST_BUNKER
 		"nuke":
-			return Rules.NUKE_COST
+			return int(Rules.NUKE_COST * (mod(fid, "nuke_cost") if fid > 0 else 1.0))
 		"mega":
-			return Rules.MEGA_NUKE_COST
-	return int(base * (1.0 + Rules.COST_ESCALATION * owned))
+			return int(Rules.MEGA_NUKE_COST * (mod(fid, "nuke_cost") if fid > 0 else 1.0))
+		_:
+			if Rules.BUILDINGS.has(kind):
+				base = Rules.BUILDINGS[kind]["cost"]
+				if fid > 0:
+					owned = int(factions[fid]["extra"].get(kind, 0))
+	var cost := base * (1.0 + Rules.COST_ESCALATION * owned)
+	if fid > 0:
+		cost *= mod(fid, "build_cost")
+	return int(cost)
 
 
 func apply(a: Dictionary) -> Dictionary:
@@ -1098,6 +1150,8 @@ func _apply(a: Dictionary) -> String:
 				return "Неизвестная постройка"
 			if kind == "port" and not map.is_coast(c):
 				return "Порт строится на берегу моря"
+			if Rules.BUILDINGS.has(kind) and Rules.BUILDINGS[kind]["coast"] and not map.is_coast(c):
+				return "%s строится на берегу моря" % Rules.BUILDINGS[kind]["name"]
 			if f["gold"] < cost:
 				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
 			f["gold"] -= cost
@@ -1114,6 +1168,9 @@ func _apply(a: Dictionary) -> String:
 					f["barracks"] += 1
 				"bunker":
 					f["bunkers"] += 1
+				_:
+					f["extra"][kind] = int(f["extra"].get(kind, 0)) + 1
+					f["mods_dirty"] = true
 			buildings_at[c] = {"faction": fid, "kind": kind}
 			building_placed.emit(fid, kind, c)
 			return ""
@@ -1145,7 +1202,18 @@ func _apply(a: Dictionary) -> String:
 			var kind: String = a["kind"]
 			if decree_cooldown(fid, kind) > 0.0:
 				return "Указ ещё не готов (%d с)" % int(ceil(decree_cooldown(fid, kind)))
-			var cost := decree_cost(kind)
+			var cost := decree_cost(fid, kind)
+			if Rules.EXTRA_DECREES.has(kind):
+				var d: Dictionary = Rules.EXTRA_DECREES[kind]
+				if f["gold"] < cost:
+					return "Не хватает золота (нужно %s)" % Names.short_number(cost)
+				f["gold"] = maxf(0.0, f["gold"] - cost + d.get("gold", 0.0))
+				f["approval"] = clampf(f["approval"] + d.get("approval", 0.0), 0.0, 100.0)
+				if d.has("troops_share"):
+					f["troops"] = maxf(0.0, f["troops"] + max_troops_of(fid) * d["troops_share"])
+				f["decree_cd_" + kind] = tick + int(d["cooldown"])
+				decree_applied.emit(fid, kind)
+				return ""
 			if f["gold"] < cost:
 				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
 			match kind:
@@ -1182,6 +1250,7 @@ func _apply(a: Dictionary) -> String:
 				return "Не хватает золота (нужно %s)" % Names.short_number(fee)
 			f["gold"] -= fee
 			f["staff"][key] = true
+			f["mods_dirty"] = true
 			minister_changed.emit(fid, key, true)
 			return ""
 		"fire":
@@ -1189,6 +1258,7 @@ func _apply(a: Dictionary) -> String:
 			if not has_minister(fid, key):
 				return "Такого сотрудника нет"
 			f["staff"][key] = false
+			f["mods_dirty"] = true
 			minister_changed.emit(fid, key, false)
 			return ""
 		"agitate":
@@ -1214,23 +1284,32 @@ func _apply(a: Dictionary) -> String:
 			var passed: bool = support >= Rules.BILL_MAJORITY
 			if passed:
 				f["bills"][key] = true
+				f["mods_dirty"] = true
 			bill_result.emit(fid, key, passed, support)
+			return ""
+		"budget":
+			var item: String = a["item"]
+			if not Rules.BUDGET.has(item):
+				return "Нет такой статьи бюджета"
+			f["budget"][item] = clampi(int(a["level"]), 0, Rules.BUDGET_MAX)
+			f["mods_dirty"] = true
 			return ""
 		"research":
 			var key: String = a["tech"]
-			if not Rules.TECHS.has(key):
+			if not Rules.TECHS.has(key) and not Rules.EXTRA_TECHS.has(key):
 				return "Неизвестная технология"
-			var t: Dictionary = Rules.TECHS[key]
+			var t: Dictionary = tech_def(key)
 			var level := tech_level(fid, key)
 			if level >= t["max"]:
 				return "Уже изучено полностью"
 			if t["req"] != "" and tech_level(fid, t["req"]) == 0:
-				return "Сначала изучите: %s" % Rules.TECHS[t["req"]]["name"]
+				return "Сначала изучите: %s" % tech_def(t["req"])["name"]
 			var cost := tech_cost(fid, key)
 			if f["gold"] < cost:
 				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
 			f["gold"] -= cost
 			f["tech"][key] = level + 1
+			f["mods_dirty"] = true
 			tech_researched.emit(fid, key, level + 1)
 			return ""
 	return "Неизвестное действие"
