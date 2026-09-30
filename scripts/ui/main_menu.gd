@@ -12,6 +12,11 @@ func _ready() -> void:
 	set_anchors_and_offsets_preset(PRESET_FULL_RECT)
 	theme = ThemeFactory.make()
 	var settings = get_node_or_null("/root/Settings")
+	if OS.has_feature("web") and settings != null:
+		var from_site: String = str(JavaScriptBridge.eval("new URLSearchParams(location.search).get('nick') || ''"))
+		if from_site.strip_edges() != "":
+			settings.nickname = from_site.strip_edges().left(16)
+			settings.save()
 
 	var bg := TextureRect.new()
 	bg.texture = load("res://assets/map/preview.png")

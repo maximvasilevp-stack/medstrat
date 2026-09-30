@@ -109,8 +109,11 @@ tests/run_tests.gd        headless-тесты (карта, спавн, рост,
 Сборка (нужны экспортные шаблоны Godot 4.7.2, они уже установлены на этом Mac):
 
 ```bash
-godot --headless --path . --export-release Web docs/index.html
+godot --headless --path . --export-release Web docs/play.html
 ```
+
+`docs/index.html` — сайт игры (описание, скриншоты, вход по нику и паролю; профили хранятся в браузере
+игрока, сервера нет), `docs/play.html` — сама игра, ник передаётся из сайта в игру.
 
 Проверка у себя: `python3 -m http.server 8080 --directory docs` и открыть http://localhost:8080.
 
@@ -120,7 +123,7 @@ godot --headless --path . --export-release Web docs/index.html
 3. На GitHub: Settings → Pages → Source: «Deploy from a branch», Branch: `main`, Folder: `/docs` → Save.
 4. Через минуту игра будет по адресу `https://ВАШ_НИК.github.io/medstrat/`.
 
-Каждое обновление: пересобрать командой выше, `git add docs && git commit -m "web build" && git push`.
+Каждое обновление: пересобрать командой выше, затем `git add docs && git commit -m "web build" && git push`.
 
 ## Дорожная карта
 
