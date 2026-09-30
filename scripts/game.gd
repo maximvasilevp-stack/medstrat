@@ -161,6 +161,17 @@ func _ready() -> void:
 	hud.spy.connect(func(t, op): world.apply({"type": "spy", "player": human, "target": t, "op": op}))
 	hud.autopilot_changed.connect(func(task, on): world.apply({"type": "autopilot", "player": human, "task": task, "on": on}))
 	hud.speed_changed.connect(func(s): speed = s)
+	hud.rate_changed.connect(func(l): world.apply({"type": "rate", "player": human, "level": l}))
+	hud.loan.connect(func(a): world.apply({"type": "loan", "player": human, "amount": a}))
+	hud.repay.connect(func(a): world.apply({"type": "repay", "player": human, "amount": a}))
+	hud.emission.connect(func(): world.apply({"type": "emission", "player": human}))
+	hud.policy_changed.connect(func(g, p): world.apply({"type": "policy", "player": human, "good": g, "policy": p}))
+	hud.buy_goods.connect(func(g, a): world.apply({"type": "buy", "player": human, "good": g, "amount": a}))
+	hud.sell_goods.connect(func(g, a): world.apply({"type": "sell", "player": human, "good": g, "amount": a}))
+	world.economy_event.connect(func(fid, text):
+		if fid == human:
+			hud.toast(text, Color(1, 0.85, 0.35))
+			_sfx("error" if text.begins_with("Дефолт") else "build"))
 	exit_dialog.save_requested.connect(_save_game)
 	world.trade_signed.connect(func(fid, target):
 		if fid == human:

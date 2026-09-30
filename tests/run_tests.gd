@@ -45,6 +45,7 @@ func _init() -> void:
 	test_diplomacy_two()
 	test_missions_autopilot()
 	test_save_load()
+	test_economy()
 	test_ranking_and_names()
 	test_determinism()
 	test_soak()
@@ -857,7 +858,7 @@ func test_missions_autopilot() -> void:
 		var m := Missions.make(w, 1, key, 0)
 		check(m["target"] > Missions.value(w, 1, Missions.TEMPLATES[key]["stat"]) - 1e-6, "template %s has a reachable target" % key)
 	var m0: Dictionary = Missions.make(w, 1, "gold", 0)
-	f["missions"][0] = m0
+	f["missions"] = [m0, Missions.make(w, 1, "cities", 0), Missions.make(w, 1, "election", 0)]
 	f["gold"] = m0["target"] + 1.0
 	var g0: float = f["gold"]
 	for i in Rules.TICKS_PER_SEC:
@@ -906,6 +907,74 @@ func test_save_load() -> void:
 	check(w3 != null and w3.tick == w.tick, "save file loads")
 	Save.remove()
 	check(not Save.exists(), "save file removed")
+
+
+func test_economy() -> void:
+	var Economy = preload("res://scripts/sim/economy.gd")
+	var w = _quiet(95)
+	var f: Dictionary = w.factions[1]
+	var e: Dictionary = f["econ"]
+	for g in Economy.GOOD_ORDER:
+		check(Economy.production(w, 1)[g] > 0.0 and Economy.consumption(w, 1)[g] > 0.0, "%s is produced and consumed" % g)
+	for i in 5 * Rules.TICKS_PER_SEC:
+		w.step()
+	check(not e["prod"].is_empty() and float(e["gdp"]) > 0.0, "economy ticks and GDP is positive (%.1f)" % float(e["gdp"]))
+	for g in Economy.GOOD_ORDER:
+		check(Economy.price(w, g) > 0.0 and w.market["goods"][g]["supply"] > 0.0, "world price of %s exists" % g)
+	# shortages hurt
+	var ap0: float = w.mod(1, "approval")
+	e["shortage"]["food"] = true
+	f["mods_dirty"] = true
+	check(absf(w.mod(1, "approval") - (ap0 - 8.0)) < 1e-6 and w.mod(1, "growth") < 1.0, "food shortage cuts approval and growth")
+	e["shortage"]["food"] = false
+	f["mods_dirty"] = true
+	# key rate
+	var g0: float = w.mod(1, "growth")
+	check(w.apply({"type": "rate", "player": 1, "level": 8})["ok"] and int(e["rate"]) == 8 and w.mod(1, "growth") < g0, "high key rate slows growth")
+	w.apply({"type": "rate", "player": 1, "level": 3})
+	# loans
+	f["gold"] = 1000.0
+	var limit: float = Economy.credit_limit(w, 1)
+	check(limit >= 2000.0, "credit limit exists")
+	check(not w.apply({"type": "loan", "player": 1, "amount": limit + 1.0})["ok"], "loan above the limit refused")
+	check(w.apply({"type": "loan", "player": 1, "amount": 2000})["ok"] and is_equal_approx(f["gold"], 3000.0) and is_equal_approx(float(e["debt"]), 2000.0), "loan adds gold and debt")
+	var gold1: float = f["gold"]
+	for i in 3 * Rules.TICKS_PER_SEC:
+		w.step()
+	check(Economy.interest_per_sec(f) > 0.0 and w.gold_rate_of(1) < w.gross_income(1), "interest is paid every second")
+	check(w.apply({"type": "repay", "player": 1, "amount": 5000})["ok"] and float(e["debt"]) == 0.0 and int(f["counters"]["loans_repaid"]) == 1, "loan repaid")
+	# emission and inflation
+	f["gold"] = 1000.0
+	var pl0: float = float(e["price_level"])
+	var cost0: int = w.building_cost("city", 1)
+	check(w.apply({"type": "emission", "player": 1})["ok"] and f["gold"] > 1000.0 and float(e["emission_heat"]) > 0.0, "emission prints gold")
+	check(not w.apply({"type": "emission", "player": 1})["ok"], "emission has a cooldown")
+	for i in 30 * Rules.TICKS_PER_SEC:
+		w.step()
+	check(float(e["inflation"]) > Economy.BASE_INFLATION and float(e["price_level"]) > pl0 and w.building_cost("city", 1) > cost0, "inflation raises the price level and costs")
+	# manual trade and policies
+	f["gold"] = 100000.0
+	var st0: float = float(e["stock"]["luxury"])
+	check(w.apply({"type": "buy", "player": 1, "good": "luxury", "amount": 100})["ok"] and float(e["stock"]["luxury"]) > st0 + 99.0 and f["gold"] < 100000.0, "buying goods fills the stock")
+	var gold2: float = f["gold"]
+	check(w.apply({"type": "sell", "player": 1, "good": "luxury", "amount": 50})["ok"] and f["gold"] > gold2, "selling goods brings gold")
+	check(w.apply({"type": "policy", "player": 1, "good": "food", "policy": "stock"})["ok"] and e["policy"]["food"] == "stock", "policy set")
+	check(not w.apply({"type": "policy", "player": 1, "good": "food", "policy": "hoard"})["ok"], "unknown policy rejected")
+	e["stock"]["food"] = Economy.STOCK_CAP + 500.0
+	for i in Rules.TICKS_PER_SEC:
+		w.step()
+	check(float(e["stock"]["food"]) > Economy.STOCK_CAP + 400.0, "'stock' policy keeps the surplus")
+	w.apply({"type": "policy", "player": 1, "good": "food", "policy": "auto"})
+	var gold3: float = f["gold"]
+	for i in Rules.TICKS_PER_SEC:
+		w.step()
+	check(float(e["stock"]["food"]) <= Economy.STOCK_CAP + 1.0 and f["gold"] > gold3, "'auto' policy exports the surplus for gold")
+	var breakdown: Dictionary = w.income_breakdown(1)
+	check(breakdown.has("Товары") and breakdown.has("Проценты"), "income breakdown lists goods trade and interest")
+	check(f["history"].has("gdp") and f["history"].has("inflation"), "history tracks GDP and inflation")
+	var Save = preload("res://scripts/sim/save.gd")
+	var w2 = Save.from_dict(map, Save.to_dict(w))
+	check(is_equal_approx(Economy.price(w2, "food"), Economy.price(w, "food")) and is_equal_approx(float(w2.factions[1]["econ"]["price_level"]), float(e["price_level"])), "market and economy survive a save")
 
 
 func test_ranking_and_names() -> void:

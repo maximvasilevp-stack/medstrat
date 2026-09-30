@@ -36,10 +36,15 @@ const LIST := {
 	"missions10": {"name": "Исполнитель", "desc": "Выполните 10 заданий", "xp": 60},
 	"all_seasons": {"name": "Круглый год", "desc": "Переживите все четыре времени года", "xp": 20},
 	"nightmare": {"name": "Кошмар наяву", "desc": "Выиграйте матч на сложности «Кошмар»", "xp": 300},
+	"economist": {"name": "Экономист", "desc": "ВВП 500 золота в секунду", "xp": 50},
+	"banker": {"name": "Банкир", "desc": "Возьмите кредит и полностью его погасите", "xp": 30},
+	"tycoon": {"name": "Спекулянт", "desc": "Заработайте 10 000 на ручной торговле товарами", "xp": 60},
+	"printer": {"name": "Печатный станок", "desc": "Проведите три эмиссии и не получите дефолт", "xp": 30},
 }
 const ORDER := ["first_blood", "hundred", "thousand", "ten_thousand", "quarter", "winner", "city_builder", "admiral", "nuclear", "mega",
 	"pacifist", "lawmaker", "codex", "cabinet", "scholar", "beloved", "tyrant", "reelected", "diplomat", "ally", "overlord", "merchant",
-	"spymaster", "reformer", "builder", "prospector", "conqueror", "survivor", "marathon", "rich", "horde", "missions10", "all_seasons", "nightmare"]
+	"spymaster", "reformer", "builder", "prospector", "conqueror", "survivor", "marathon", "rich", "horde", "missions10", "all_seasons", "nightmare",
+	"economist", "banker", "tycoon", "printer"]
 
 
 static func _count_true(d: Dictionary) -> int:
@@ -133,6 +138,14 @@ static func met(world, fid: int, key: String) -> bool:
 			return world.seconds() >= 4.0 * 120.0 and f["alive"]
 		"nightmare":
 			return world.winner_declared == fid and world.difficulty >= 3
+		"economist":
+			return float(f["econ"]["gdp"]) >= 500.0
+		"banker":
+			return int(c.get("loans_repaid", 0)) > 0
+		"tycoon":
+			return float(f["econ"]["manual_profit"]) >= 10000.0
+		"printer":
+			return int(c.get("emissions", 0)) >= 3 and not f["econ"]["defaulted"]
 	return false
 
 

@@ -28,6 +28,11 @@ extends RefCounted
 ##   {type="vassalize", player, target}                            a much smaller rival pays tribute
 ##   {type="spy", player, target, op}                              covert operation, see Rules.SPY_OPS
 ##   {type="autopilot", player, task, on}                          let the AI run a part of your country
+##   {type="rate", player, level}                                  key interest rate 0..10
+##   {type="loan", player, amount} / {type="repay", player, amount}
+##   {type="emission", player}                                     print money: gold now, inflation later
+##   {type="policy", player, good, policy}                         trade policy for a good (Economy.POLICIES)
+##   {type="buy", player, good, amount} / {type="sell", player, good, amount}
 ##   {type="admin",  player, code}                               cheat code: infinite resources
 
 const Rules := preload("res://scripts/sim/rules.gd")
@@ -36,6 +41,7 @@ const BotBrain := preload("res://scripts/sim/bot_brain.gd")
 const Content := preload("res://scripts/sim/content.gd")
 const Resources := preload("res://scripts/sim/resources.gd")
 const Missions := preload("res://scripts/sim/missions.gd")
+const Economy := preload("res://scripts/sim/economy.gd")
 
 enum Kind { HUMAN, BOT, CITY }
 enum Phase { SPAWN, PLAY, FINISHED }
@@ -76,6 +82,7 @@ signal vassal_gained(faction_id: int, target: int)
 signal spy_result(faction_id: int, target: int, op: String, success: bool, text: String)
 signal mission_done(faction_id: int, mission: Dictionary)
 signal news_posted(text: String, kind: String)
+signal economy_event(faction_id: int, text: String)
 
 var map
 var rng := RandomNumberGenerator.new()
@@ -101,6 +108,7 @@ var winner_declared: int = 0          # faction that already triggered match_fin
 var season: int = 0                   # index into Rules.SEASONS
 var difficulty: int = 1               # index into Rules.DIFFICULTIES
 var scenario: String = "free"        # key in Scenarios.LIST
+var market: Dictionary = Economy.new_market()
 var _spawns: Array = []
 var _captured_now := PackedInt32Array()
 var _recent: Array = []               # ring of PackedInt32Array, newest first
@@ -181,10 +189,11 @@ func _new_faction(name: String, color: Color, kind: int) -> Dictionary:
 		"staff": {}, "seats": {}, "ruling": "", "agitation": {}, "bills": {}, "extra": {}, "budget": {},
 		"reforms": _default_reforms(), "projects": {}, "projects_done": {}, "relations": {}, "pacts": {},
 		"res": {}, "counters": {}, "trade": {}, "allies": {}, "vassals": {}, "overlord": 0, "persona": "",
-		"missions": [], "spy_cd": 0, "autopilot": {},
+		"missions": [], "spy_cd": 0, "autopilot": {}, "econ": Economy.new_state(),
 		"mods": {}, "mods_dirty": true,
 		"history": {"gold": PackedFloat32Array(), "troops": PackedFloat32Array(), "cells": PackedFloat32Array(),
-			"approval": PackedFloat32Array(), "income": PackedFloat32Array()},
+			"approval": PackedFloat32Array(), "income": PackedFloat32Array(), "gdp": PackedFloat32Array(),
+			"inflation": PackedFloat32Array(), "price_food": PackedFloat32Array()},
 		"alive": true, "border": {}, "spawn": -1,
 		"attack_size": Rules.DEFAULT_ATTACK_SIZE,
 	}
@@ -452,6 +461,7 @@ func mods_of(fid: int) -> Dictionary:
 			Content.merge_mods(m, Resources.KINDS[kind]["mods"], n)
 	if f["kind"] != Kind.CITY:
 		Content.merge_mods(m, Rules.SEASONS[season]["mods"])
+		Content.merge_mods(m, Economy.mods(f))
 	f["mods"] = m
 	f["mods_dirty"] = false
 	return m
@@ -482,7 +492,12 @@ func salaries_of(fid: int) -> float:
 
 
 func bill_cost(fid: int, key: String) -> int:
-	return int(round(Rules.BILLS[key]["cost"] * mod(fid, "bill_cost")))
+	return int(round(Rules.BILLS[key]["cost"] * mod(fid, "bill_cost") * price_level(fid)))
+
+
+## Inflation multiplies every gold price (1.0 = prices of the first minute).
+func price_level(fid: int) -> float:
+	return float(factions[fid]["econ"]["price_level"])
 
 
 ## Why a bill cannot be put to the vote right now ("" = it can).
@@ -499,7 +514,7 @@ func bill_blocked(fid: int, key: String) -> String:
 
 
 func reform_cost(fid: int) -> int:
-	return int(round(Rules.REFORM_COST * mod(fid, "bill_cost")))
+	return int(round(Rules.REFORM_COST * mod(fid, "bill_cost") * price_level(fid)))
 
 
 func project_progress(fid: int, key: String) -> float:
@@ -561,7 +576,7 @@ func tech_cost(fid: int, key: String) -> int:
 	var level := tech_level(fid, key)
 	if level >= t["max"]:
 		return 0
-	return int(round(t["costs"][level] * tech_discount(fid)))
+	return int(round(t["costs"][level] * tech_discount(fid) * price_level(fid)))
 
 
 ## Parliament seats from the way the country is run, plus campaign money.
@@ -640,7 +655,8 @@ func bill_support(fid: int, key: String) -> int:
 func record_history(fid: int) -> void:
 	var f: Dictionary = factions[fid]
 	var h: Dictionary = f["history"]
-	var samples := {"gold": f["gold"], "troops": f["troops"], "cells": float(f["cells"]), "approval": f["approval"], "income": gold_rate_of(fid)}
+	var samples := {"gold": f["gold"], "troops": f["troops"], "cells": float(f["cells"]), "approval": f["approval"], "income": gold_rate_of(fid),
+		"gdp": float(f["econ"]["gdp"]), "inflation": float(f["econ"]["inflation"]), "price_food": Economy.price(self, "food")}
 	for key in samples:
 		var arr: PackedFloat32Array = h[key]
 		arr.append(samples[key])
@@ -660,8 +676,10 @@ func income_breakdown(fid: int) -> Dictionary:
 		"Постройки": mod(fid, "gold_flat"),
 		"Торговля": trade_income(fid),
 		"Дань": tribute_of(fid),
+		"Товары": float(f["econ"]["trade_gold"]),
 		"Зарплаты": -salaries_of(fid),
 		"Бюджет": -budget_cost(fid),
+		"Проценты": -Economy.interest_per_sec(f),
 	}
 
 
@@ -711,7 +729,13 @@ func gold_rate_of(fid: int) -> float:
 	if f["kind"] == Kind.BOT:
 		rate *= Rules.DIFFICULTIES[difficulty]["bot_gold"]
 	rate += trade_income(fid) + tribute_of(fid)
-	return rate - salaries_of(fid) - budget_cost(fid)
+	return rate - salaries_of(fid) - budget_cost(fid) - Economy.interest_per_sec(f)
+
+
+## Income before salaries, budget and interest (the base of the credit limit).
+func gross_income(fid: int) -> float:
+	var f: Dictionary = factions[fid]
+	return gold_rate_of(fid) + salaries_of(fid) + budget_cost(fid) + Economy.interest_per_sec(f)
 
 
 func grace_seconds() -> float:
@@ -959,6 +983,7 @@ func step() -> void:
 		BotBrain.autopilot(self, human, factions[human]["autopilot"])
 	if tick % Rules.TICKS_PER_SEC == 0:
 		_politics_second()
+		Economy.tick_second(self)
 	if tick % Rules.HISTORY_PERIOD_TICKS == 0 and factions[human]["alive"]:
 		record_history(human)
 	if tick % 5 == 0:
@@ -1444,7 +1469,7 @@ func building_cost(kind: String, fid: int = 0) -> int:
 					owned = int(factions[fid]["extra"].get(kind, 0))
 	var cost := base * (1.0 + Rules.COST_ESCALATION * owned)
 	if fid > 0:
-		cost *= mod(fid, "build_cost")
+		cost *= mod(fid, "build_cost") * price_level(fid)
 	return int(cost)
 
 
@@ -1696,7 +1721,7 @@ func _apply(a: Dictionary) -> String:
 				return "Одновременно не больше %d проектов" % Rules.PROJECT_MAX_ACTIVE
 			if p.has("req_tech") and tech_level(fid, p["req_tech"]) == 0:
 				return "Нужна технология: %s" % tech_def(p["req_tech"])["name"]
-			var cost: int = int(round(p["cost"] * mod(fid, "build_cost")))
+			var cost: int = int(round(p["cost"] * mod(fid, "build_cost") * price_level(fid)))
 			if f["gold"] < cost:
 				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
 			f["gold"] -= cost
@@ -1886,6 +1911,76 @@ func _apply(a: Dictionary) -> String:
 				rel[fid] = maxf(0.0, float(rel.get(fid, Rules.RELATION_START)) - Rules.SPY_FAIL_RELATION)
 				text = "Агент пойман, %s в ярости (отношения −%d)" % [t["name"], int(Rules.SPY_FAIL_RELATION)]
 			spy_result.emit(fid, target, op, success, text)
+			return ""
+		"rate":
+			var level: int = clampi(int(a["level"]), Economy.RATE_MIN, Economy.RATE_MAX)
+			f["econ"]["rate"] = level
+			f["mods_dirty"] = true
+			return ""
+		"loan":
+			var amount: float = maxf(0.0, float(a["amount"]))
+			var e: Dictionary = f["econ"]
+			if e["defaulted"]:
+				return "После дефолта в долг не дают, пока долг не станет меньше половины лимита"
+			var limit := Economy.credit_limit(self, fid)
+			if float(e["debt"]) + amount > limit:
+				return "Кредитный лимит %s золота (2.5 минуты дохода)" % Names.short_number(limit)
+			e["debt"] = float(e["debt"]) + amount
+			f["gold"] += amount
+			_count(fid, "loans_taken")
+			return ""
+		"repay":
+			var e: Dictionary = f["econ"]
+			var amount: float = minf(float(e["debt"]), minf(f["gold"], maxf(0.0, float(a["amount"]))))
+			if amount <= 0.0:
+				return "Нечего погашать" if float(e["debt"]) <= 0.0 else "Не хватает золота"
+			e["debt"] = float(e["debt"]) - amount
+			f["gold"] -= amount
+			if float(e["debt"]) <= 0.01:
+				e["debt"] = 0.0
+				_count(fid, "loans_repaid")
+			return ""
+		"emission":
+			var e: Dictionary = f["econ"]
+			if int(e["emission_cd"]) > tick:
+				return "Печатный станок остывает (%d с)" % int(ceil((int(e["emission_cd"]) - tick) * Rules.TICK_DT))
+			var amount := Economy.emission_amount(self, fid)
+			f["gold"] += amount
+			e["emission_heat"] = float(e["emission_heat"]) + Economy.EMISSION_INFLATION
+			e["emission_cd"] = tick + Economy.EMISSION_COOLDOWN
+			_count(fid, "emissions")
+			economy_event.emit(fid, "Напечатано %s золота, инфляция разгоняется" % Names.short_number(amount))
+			return ""
+		"policy":
+			var good: String = a["good"]
+			var policy: String = a["policy"]
+			if not Economy.GOODS.has(good) or not Economy.POLICIES.has(policy):
+				return "Нет такого товара или политики"
+			f["econ"]["policy"][good] = policy
+			return ""
+		"buy":
+			var good: String = a["good"]
+			if not Economy.GOODS.has(good):
+				return "Нет такого товара"
+			var amount: float = maxf(1.0, float(a["amount"]))
+			var cost: float = amount * Economy.price(self, good)
+			if f["gold"] < cost:
+				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
+			f["gold"] -= cost
+			f["econ"]["stock"][good] = float(f["econ"]["stock"][good]) + amount
+			f["econ"]["manual_profit"] = float(f["econ"]["manual_profit"]) - cost
+			return ""
+		"sell":
+			var good: String = a["good"]
+			if not Economy.GOODS.has(good):
+				return "Нет такого товара"
+			var amount: float = minf(float(f["econ"]["stock"][good]), maxf(1.0, float(a["amount"])))
+			if amount < 1.0:
+				return "Склад пуст"
+			var gain: float = amount * Economy.price(self, good) * Economy.SELL_DISCOUNT
+			f["gold"] += gain
+			f["econ"]["stock"][good] = float(f["econ"]["stock"][good]) - amount
+			f["econ"]["manual_profit"] = float(f["econ"]["manual_profit"]) + gain
 			return ""
 		"autopilot":
 			var task: String = a["task"]
