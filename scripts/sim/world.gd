@@ -762,6 +762,8 @@ func _apply(a: Dictionary) -> String:
 		f["admin"] = true
 		f["gold"] = 999999999.0
 		f["troops"] = maxf(f["troops"], 1000000.0)
+		for key in Rules.TECHS:
+			f["tech"][key] = Rules.TECHS[key]["max"]
 		admin_enabled.emit(fid)
 		return ""
 	if phase == Phase.SPAWN:

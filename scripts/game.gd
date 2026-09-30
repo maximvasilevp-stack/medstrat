@@ -151,7 +151,7 @@ func _ready() -> void:
 	world.nuke_intercepted.connect(_on_nuke_intercepted)
 	world.tech_researched.connect(_on_tech_researched)
 	world.admin_enabled.connect(func(_f):
-		hud.toast("Админ-режим: золото и армия бесконечны", Color(1, 0.85, 0.35))
+		hud.toast("Админ-режим: бесконечные золото и армия, все технологии открыты", Color(1, 0.85, 0.35))
 		_sfx("win"))
 	world.faction_eliminated.connect(_on_faction_eliminated)
 	world.match_finished.connect(_on_match_finished)

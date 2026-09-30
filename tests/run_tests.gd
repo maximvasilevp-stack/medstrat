@@ -410,6 +410,7 @@ func test_admin() -> void:
 	check(not r["ok"] and not f["admin"], "wrong code rejected")
 	check(w.apply({"type": "admin", "player": 1, "code": "666"})["ok"] and f["admin"], "code 666 enables admin mode")
 	check(f["gold"] > 1e8 and f["troops"] >= 1e6, "admin has endless resources")
+	check(w.tech_level(1, "rockets") == 1 and w.tech_level(1, "trade") == 3, "admin gets every technology")
 	w.apply({"type": "build", "player": 1, "kind": "city", "cell": f["spawn"]})
 	w.step()
 	check(f["gold"] > 1e8, "gold refills every tick")
