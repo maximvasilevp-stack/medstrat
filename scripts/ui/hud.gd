@@ -8,6 +8,13 @@ const Names := preload("res://scripts/sim/names.gd")
 const Rules := preload("res://scripts/sim/rules.gd")
 const Charts := preload("res://scripts/ui/charts.gd")
 const Content := preload("res://scripts/sim/content.gd")
+const Resources := preload("res://scripts/sim/resources.gd")
+const Missions := preload("res://scripts/sim/missions.gd")
+const Achievements := preload("res://scripts/sim/achievements.gd")
+const BotBrain := preload("res://scripts/sim/bot_brain.gd")
+const NewsFeed := preload("res://scripts/ui/news_feed.gd")
+const SPEEDS := [1.0, 2.0, 3.0, 0.0]
+const SPEED_LABELS := ["▶ 1×", "▶▶ 2×", "▶▶▶ 3×", "⏸ пауза"]
 
 signal mode_selected(kind: String)      # "" = no placement / targeting mode
 signal research(tech: String)
@@ -26,6 +33,12 @@ signal reform(axis: String, option: String)
 signal project(key: String)
 signal gift(target: int)
 signal pact(target: int)
+signal trade_deal(target: int)
+signal alliance(target: int)
+signal vassalize(target: int)
+signal spy(target: int, op: String)
+signal autopilot_changed(task: String, on: bool)
+signal speed_changed(speed: float)
 signal exit_pressed
 signal attack_size_changed(ratio: float)
 signal cancel_attack(target: int)
@@ -109,6 +122,22 @@ var project_rows: Dictionary = {}
 var diplo_box: VBoxContainer
 var diplo_rows: Dictionary = {}
 var gov_filters: Dictionary = {}
+var resource_rows: Dictionary = {}
+var season_label: Label
+var news
+var speed_button: Button
+var speed_index := 0
+var autopilot_button: Button
+var missions_panel: PanelContainer
+var mission_rows: Array = []
+var profile_label: Label
+var achievement_labels: Dictionary = {}
+var autopilot_panel: PanelContainer
+var autopilot_buttons: Dictionary = {}
+var _autopilot_syncing := false
+var spy_target: OptionButton
+var spy_status: Label
+var spy_rows: Dictionary = {}
 var gov_tab_index := 0
 var _tax_syncing := false
 var overlay: Control
@@ -139,6 +168,8 @@ func _ready() -> void:
 	_build_tech_panel()
 	_build_people_panel()
 	_build_gov_panel()
+	_build_missions_panel()
+	_build_autopilot_panel()
 	_build_event_panel()
 	_build_tooltip()
 	_build_toast()
@@ -220,23 +251,49 @@ func _build_top() -> void:
 	menu_button.tooltip_text = "Esc: звук, код, выход"
 	menu_button.pressed.connect(func(): exit_pressed.emit())
 	row.add_child(menu_button)
+	speed_button = Button.new()
+	speed_button.text = SPEED_LABELS[0]
+	speed_button.custom_minimum_size = Vector2(70 if mobile else 90, 36)
+	speed_button.tooltip_text = "Скорость игры (пробел — пауза)"
+	speed_button.pressed.connect(_cycle_speed)
+	row.add_child(speed_button)
+	autopilot_button = Button.new()
+	autopilot_button.text = "Авто" if mobile else "Автопилот"
+	autopilot_button.custom_minimum_size = Vector2(60, 36)
+	autopilot_button.tooltip_text = "Клавиша A: советники развивают страну сами"
+	autopilot_button.pressed.connect(toggle_autopilot)
+	row.add_child(autopilot_button)
+	news = NewsFeed.new()
+	news.position = Vector2(12, 58)
+	news.size = Vector2(300, 200)
+	news.visible = not mobile
+	add_child(news)
 
 	timer_bar = _bar(ThemeFactory.LIME.darkened(0.15), 12)
 	timer_bar.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
 	timer_bar.offset_left = -60 if mobile else -260
 	timer_bar.offset_right = 150 if mobile else 260
-	timer_bar.offset_top = 14
-	timer_bar.offset_bottom = 26
+	timer_bar.offset_top = 54 if mobile else 14
+	timer_bar.offset_bottom = 66 if mobile else 26
 	add_child(timer_bar)
 	timer_label = _label("", 12)
 	timer_label.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
 	timer_label.offset_left = -60 if mobile else -260
 	timer_label.offset_right = 150 if mobile else 260
-	timer_label.offset_top = 28
-	timer_label.offset_bottom = 46
+	timer_label.offset_top = 68 if mobile else 28
+	timer_label.offset_bottom = 86 if mobile else 46
 	timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	timer_label.add_theme_stylebox_override("normal", ThemeFactory.pill(ThemeFactory.PANEL, 2, 8))
 	add_child(timer_label)
+	season_label = _label("", 11, ThemeFactory.TEXT_DIM)
+	season_label.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
+	season_label.offset_left = -60 if mobile else -260
+	season_label.offset_right = 150 if mobile else 260
+	season_label.offset_top = 88 if mobile else 48
+	season_label.offset_bottom = 104 if mobile else 64
+	season_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	season_label.mouse_filter = MOUSE_FILTER_IGNORE
+	add_child(season_label)
 
 
 func _build_leaderboard() -> void:
@@ -373,6 +430,7 @@ func _build_cards() -> void:
 	gkey.position = Vector2(8, 5)
 	gov.add_child(gkey)
 	bar.add_child(gov)
+	_menu_card(bar, "ЗАДАНИЯ", "Q", PixelSprites.COIN, ThemeFactory.LEMON, "Клавиша Q: задания, достижения, профиль", toggle_missions)
 
 	var status_box := CenterContainer.new()
 	status_box.set_anchors_and_offsets_preset(PRESET_BOTTOM_WIDE)
@@ -672,12 +730,12 @@ func _build_people_panel() -> void:
 		decree_buttons[kind] = b
 
 
-const GOV_TABS := ["Госдума", "Министры", "Законы", "Постройки", "Бюджет", "Реформы", "Проекты", "Дипломатия", "Графики"]
+const GOV_TABS := ["Госдума", "Министры", "Законы", "Постройки", "Бюджет", "Реформы", "Проекты", "Дипломатия", "Разведка", "Ресурсы", "Графики"]
 
 
 func _build_gov_panel() -> void:
 	gov_panel = PanelContainer.new()
-	_place_panel(gov_panel, 900, 640)
+	_place_panel(gov_panel, 1000, 640)
 	gov_panel.visible = false
 	add_child(gov_panel)
 	var box := VBoxContainer.new()
@@ -718,7 +776,7 @@ func _build_gov_panel() -> void:
 		b.button_group = group
 		b.size_flags_horizontal = SIZE_EXPAND_FILL
 		b.custom_minimum_size = Vector2(0, 36)
-		b.add_theme_font_size_override("font_size", 13)
+		b.add_theme_font_size_override("font_size", 12)
 		var idx := i
 		b.pressed.connect(func(): show_gov_tab(idx))
 		tabs.add_child(b)
@@ -958,8 +1016,38 @@ func _build_gov_panel() -> void:
 	diplo_box.add_theme_constant_override("separation", 6)
 	diplo.add_child(diplo_box)
 
+	# --- espionage (rows are built on first use, they need the world)
+	var spyp: VBoxContainer = gov_pages[8]
+	spyp.add_child(_label("Выберите цель и операцию. Шанс зависит от вашего шефа разведки и от разведки цели. Провал портит отношения на %d. После операции агенты отдыхают %d с." % [int(Rules.SPY_FAIL_RELATION), Rules.SPY_COOLDOWN_TICKS / Rules.TICKS_PER_SEC], 11, ThemeFactory.TEXT_DIM))
+
+	# --- resources
+	var resp: VBoxContainer = gov_pages[9]
+	resp.add_child(_label("Месторождения разбросаны по карте (значки на земле). Каждая клетка с ресурсом даёт бонус, до %d клеток одного вида. Наведите на значок, чтобы узнать, что там." % Resources.STACK_CAP, 11, ThemeFactory.TEXT_DIM))
+	for kind in Resources.KIND_ORDER:
+		var rd: Dictionary = Resources.KINDS[kind]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		resp.add_child(row)
+		var swatch := ColorRect.new()
+		swatch.color = Color(rd["color"])
+		swatch.custom_minimum_size = Vector2(14, 14)
+		swatch.size_flags_vertical = SIZE_SHRINK_CENTER
+		swatch.mouse_filter = MOUSE_FILTER_IGNORE
+		row.add_child(swatch)
+		var text := VBoxContainer.new()
+		text.size_flags_horizontal = SIZE_EXPAND_FILL
+		text.add_theme_constant_override("separation", 0)
+		row.add_child(text)
+		text.add_child(_label(rd["name"], 14))
+		text.add_child(_label("за клетку: " + rd["desc"], 11, ThemeFactory.TEXT_DIM))
+		var count := _label("", 14)
+		count.custom_minimum_size = Vector2(120, 0)
+		count.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		row.add_child(count)
+		resource_rows[kind] = count
+
 	# --- statistics
-	var stats: VBoxContainer = gov_pages[8]
+	var stats: VBoxContainer = gov_pages[10]
 	var grid := GridContainer.new()
 	grid.columns = 2
 	grid.add_theme_constant_override("h_separation", 8)
@@ -1038,57 +1126,6 @@ func _apply_filter(tab: int) -> void:
 	fl["count"].text = "Показано %d из %d" % [shown, fl["rows"].size()]
 
 
-func _build_diplo_rows() -> void:
-	for id in range(1, world.factions.size()):
-		var f: Dictionary = world.factions[id]
-		if id == human or f["kind"] != world.Kind.BOT:
-			continue
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 10)
-		var actions: Container = row
-		if mobile:
-			var stack := VBoxContainer.new()
-			stack.add_theme_constant_override("separation", 4)
-			diplo_box.add_child(stack)
-			stack.add_child(row)
-			var line := HBoxContainer.new()
-			line.add_theme_constant_override("separation", 6)
-			stack.add_child(line)
-			actions = line
-		else:
-			diplo_box.add_child(row)
-		var swatch := ColorRect.new()
-		swatch.color = f["color"]
-		swatch.custom_minimum_size = Vector2(14, 14)
-		swatch.size_flags_vertical = SIZE_SHRINK_CENTER
-		swatch.mouse_filter = MOUSE_FILTER_IGNORE
-		row.add_child(swatch)
-		var text := VBoxContainer.new()
-		text.size_flags_horizontal = SIZE_EXPAND_FILL
-		text.add_theme_constant_override("separation", 0)
-		row.add_child(text)
-		var name := _wrap(_label(f["name"], 14))
-		text.add_child(name)
-		var info := _label("", 11, ThemeFactory.TEXT_DIM)
-		text.add_child(info)
-		var rel := _label("", 13)
-		rel.custom_minimum_size = Vector2(70 if mobile else 110, 0)
-		rel.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		row.add_child(rel)
-		var gift_b := Button.new()
-		gift_b.custom_minimum_size = Vector2(0 if mobile else 150, 34)
-		gift_b.size_flags_horizontal = SIZE_EXPAND_FILL if mobile else SIZE_FILL
-		var tid := id
-		gift_b.pressed.connect(func(): gift.emit(tid))
-		actions.add_child(gift_b)
-		var pact_b := Button.new()
-		pact_b.custom_minimum_size = Vector2(0 if mobile else 150, 34)
-		pact_b.size_flags_horizontal = SIZE_EXPAND_FILL if mobile else SIZE_FILL
-		pact_b.pressed.connect(func(): pact.emit(tid))
-		actions.add_child(pact_b)
-		diplo_rows[id] = {"name": name, "info": info, "rel": rel, "gift": gift_b, "pact": pact_b}
-
-
 func show_gov_tab(i: int) -> void:
 	gov_tab_index = i
 	for k in gov_pages.size():
@@ -1099,10 +1136,10 @@ func show_gov_tab(i: int) -> void:
 
 
 func toggle_gov(tab: int = -1) -> void:
-	gov_panel.visible = not gov_panel.visible
-	if gov_panel.visible:
-		tech_panel.visible = false
-		people_panel.visible = false
+	var show := not gov_panel.visible
+	_hide_panels()
+	gov_panel.visible = show
+	if show:
 		if tab >= 0:
 			show_gov_tab(tab)
 		_refresh_gov()
@@ -1215,43 +1252,17 @@ func _refresh_gov() -> void:
 					b.text = "Начать · " + Names.short_number(cost)
 					b.disabled = f["gold"] < cost or active >= Rules.PROJECT_MAX_ACTIVE
 		7:
-			if diplo_rows.is_empty():
-				_build_diplo_rows()
-			var attackers := {}
-			for a in world.incoming_attacks(human):
-				attackers[a["attacker"]] = true
-			for id in diplo_rows:
-				var r: Dictionary = diplo_rows[id]
-				var o: Dictionary = world.factions[id]
-				if not o["alive"]:
-					r["name"].text = o["name"] + " · выбыл"
-					r["info"].text = ""
-					r["rel"].text = ""
-					r["gift"].visible = false
-					r["pact"].visible = false
-					continue
-				var rel: float = world.relation_of(id, human)
-				var status := "мир"
-				if world.pact_active(human, id):
-					status = "пакт ещё %d с" % int(ceil(world.pact_seconds_left(human, id)))
-				elif attackers.has(id) and world.has_attack(human, id):
-					status = "война"
-				elif attackers.has(id):
-					status = "нападает на вас"
-				elif world.has_attack(human, id):
-					status = "вы нападаете"
-				r["name"].text = o["name"]
-				r["info"].text = "%.1f%% карты · %s" % [world.land_share(id) * 100.0, status]
-				r["rel"].text = "отношения %d" % int(rel)
-				r["rel"].add_theme_color_override("font_color", ThemeFactory.GREEN if rel >= 60.0 else (Color("#D9731F") if rel >= Rules.PACT_MIN_RELATION else ThemeFactory.RED))
-				var gcost: int = world.gift_cost(human, id)
-				var pcost: int = world.pact_cost(human, id)
-				r["gift"].text = "Подарок · " + Names.short_number(gcost)
-				r["gift"].disabled = f["gold"] < gcost
-				r["pact"].text = "Пакт · " + Names.short_number(pcost)
-				r["pact"].disabled = f["gold"] < pcost or world.pact_active(human, id) or rel < Rules.PACT_MIN_RELATION
-				r["pact"].tooltip_text = "Нужны отношения от %d" % int(Rules.PACT_MIN_RELATION) if rel < Rules.PACT_MIN_RELATION else "Ни вы, ни он не сможете атаковать друг друга %d с" % Rules.PACT_SECONDS
+			_refresh_diplomacy(f)
 		8:
+			_refresh_spy(f)
+		9:
+			var total := 0
+			for kind in resource_rows:
+				var n: int = world.resource_count(human, kind)
+				total += n
+				resource_rows[kind].text = "%d клеток" % n if n > 0 else "нет"
+				resource_rows[kind].add_theme_color_override("font_color", ThemeFactory.TEXT if n > 0 else ThemeFactory.TEXT_DIM)
+		10:
 			var h: Dictionary = f["history"]
 			var titles := {"gold": "Золото", "troops": "Армия", "cells": "Земля (клетки)", "approval": "Одобрение, %"}
 			var colors := {"gold": Color("#D9731F"), "troops": ThemeFactory.PEACH.darkened(0.15), "cells": ThemeFactory.LIME.darkened(0.2), "approval": ThemeFactory.SKY.darkened(0.15)}
@@ -1295,10 +1306,10 @@ func _build_event_panel() -> void:
 
 
 func toggle_people() -> void:
-	people_panel.visible = not people_panel.visible
-	if people_panel.visible:
-		tech_panel.visible = false
-		gov_panel.visible = false
+	var show := not people_panel.visible
+	_hide_panels()
+	people_panel.visible = show
+	if show:
 		_refresh_people()
 
 
@@ -1348,10 +1359,10 @@ func _refresh_people() -> void:
 
 
 func toggle_tech() -> void:
-	tech_panel.visible = not tech_panel.visible
-	if tech_panel.visible:
-		people_panel.visible = false
-		gov_panel.visible = false
+	var show := not tech_panel.visible
+	_hide_panels()
+	tech_panel.visible = show
+	if show:
 		_refresh_tech()
 
 
@@ -1448,6 +1459,412 @@ func _build_overlay() -> void:
 	b.text = "В главное меню"
 	b.pressed.connect(func(): menu_requested.emit())
 	box.add_child(b)
+
+
+
+# ------------------------------------------------------------------ missions, achievements, autopilot
+
+func _build_missions_panel() -> void:
+	missions_panel = PanelContainer.new()
+	_place_panel(missions_panel, 720, 600)
+	missions_panel.visible = false
+	add_child(missions_panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 8)
+	missions_panel.add_child(box)
+	var head := HBoxContainer.new()
+	box.add_child(head)
+	var title := _label("ЗАДАНИЯ И ДОСТИЖЕНИЯ", 20)
+	title.size_flags_horizontal = SIZE_EXPAND_FILL
+	head.add_child(title)
+	var close := Button.new()
+	close.text = "✕"
+	close.custom_minimum_size = Vector2(36, 32)
+	close.pressed.connect(toggle_missions)
+	head.add_child(close)
+	profile_label = _label("", 13, Color("#D9731F"))
+	box.add_child(profile_label)
+	box.add_child(_label("Три задания одновременно. Выполненное даёт золото и опыт, на его место приходит новое, всё сложнее.", 11, ThemeFactory.TEXT_DIM))
+	for i in Missions.ACTIVE:
+		var row := VBoxContainer.new()
+		row.add_theme_constant_override("separation", 2)
+		box.add_child(row)
+		var line := HBoxContainer.new()
+		line.add_theme_constant_override("separation", 10)
+		row.add_child(line)
+		var name := _label("", 14)
+		name.size_flags_horizontal = SIZE_EXPAND_FILL
+		line.add_child(name)
+		var reward := _label("", 12, Color("#D9731F"))
+		line.add_child(reward)
+		var desc := _label("", 11, ThemeFactory.TEXT_DIM)
+		row.add_child(desc)
+		var bar := _bar(ThemeFactory.LIME.darkened(0.1), 10)
+		row.add_child(bar)
+		mission_rows.append({"name": name, "reward": reward, "desc": desc, "bar": bar})
+	box.add_child(_label("ДОСТИЖЕНИЯ", 14))
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_vertical = SIZE_EXPAND_FILL
+	scroll.custom_minimum_size = Vector2(0, 120 if mobile else 220)
+	box.add_child(scroll)
+	var grid := GridContainer.new()
+	grid.columns = 1 if mobile else 2
+	grid.size_flags_horizontal = SIZE_EXPAND_FILL
+	grid.add_theme_constant_override("h_separation", 12)
+	grid.add_theme_constant_override("v_separation", 4)
+	scroll.add_child(grid)
+	for key in Achievements.ORDER:
+		var a: Dictionary = Achievements.LIST[key]
+		var l := _label("", 11, ThemeFactory.TEXT_DIM)
+		l.size_flags_horizontal = SIZE_EXPAND_FILL
+		l.custom_minimum_size = Vector2(0 if mobile else 320, 0)
+		l.text = "☐ %s — %s (+%d XP)" % [a["name"], a["desc"], a["xp"]]
+		grid.add_child(l)
+		achievement_labels[key] = l
+
+
+func set_profile(text: String, unlocked: Dictionary) -> void:
+	profile_label.text = text
+	for key in achievement_labels:
+		var a: Dictionary = Achievements.LIST[key]
+		var l: Label = achievement_labels[key]
+		var done: bool = unlocked.get(key, false)
+		l.text = "%s %s — %s (+%d XP)" % ["✔" if done else "☐", a["name"], a["desc"], a["xp"]]
+		l.add_theme_color_override("font_color", ThemeFactory.GREEN if done else ThemeFactory.TEXT_DIM)
+
+
+func toggle_missions() -> void:
+	var show := not missions_panel.visible
+	_hide_panels()
+	missions_panel.visible = show
+	if show:
+		_refresh_missions()
+
+
+func _refresh_missions() -> void:
+	var ms: Array = world.factions[human]["missions"]
+	for i in mission_rows.size():
+		var r: Dictionary = mission_rows[i]
+		if i >= ms.size():
+			r["name"].text = ""
+			r["desc"].text = ""
+			r["reward"].text = ""
+			r["bar"].value = 0.0
+			continue
+		var m: Dictionary = ms[i]
+		var t: Dictionary = Missions.TEMPLATES[m["key"]]
+		r["name"].text = "%s · уровень %d" % [t["name"], int(m["tier"]) + 1]
+		r["desc"].text = Missions.describe(m)
+		r["reward"].text = "+%s золота · +%d XP" % [Names.short_number(m["gold"]), int(m["xp"])]
+		r["bar"].value = Missions.progress(world, human, m)
+
+
+func _build_autopilot_panel() -> void:
+	autopilot_panel = PanelContainer.new()
+	_place_panel(autopilot_panel, 560, 520)
+	autopilot_panel.visible = false
+	add_child(autopilot_panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 8)
+	autopilot_panel.add_child(box)
+	var head := HBoxContainer.new()
+	box.add_child(head)
+	var title := _label("АВТОПИЛОТ", 20)
+	title.size_flags_horizontal = SIZE_EXPAND_FILL
+	head.add_child(title)
+	var close := Button.new()
+	close.text = "✕"
+	close.custom_minimum_size = Vector2(36, 32)
+	close.pressed.connect(toggle_autopilot)
+	head.add_child(close)
+	box.add_child(_label("Страна может развиваться сама: советники решают за вас включённые области, как это делают боты. Вы в любой момент вмешиваетесь вручную.", 11, ThemeFactory.TEXT_DIM))
+	var descs := {
+		"people": ["Народ", "налоги, пропаганда, ответы на события"],
+		"staff": ["Министры", "найм ключевых министров"],
+		"laws": ["Законы и проекты", "законы, нацпроекты, реформы, бюджет"],
+		"build": ["Стройка", "города, порты, рынки, казармы, защита, здания"],
+		"research": ["Наука", "покупка технологий"],
+		"diplomacy": ["Дипломатия", "торговля, подарки, пакты с сильными соседями"],
+		"expand": ["Экспансия", "захват пустой земли, высадки, слабые соседи"],
+		"war": ["Война", "ответные удары и бомбы"],
+	}
+	for task in BotBrain.ALL_TASKS:
+		var cb := CheckButton.new()
+		cb.text = "%s — %s" % [descs[task][0], descs[task][1]]
+		cb.custom_minimum_size = Vector2(0, 36)
+		var tk: String = task
+		cb.toggled.connect(func(on):
+			if not _autopilot_syncing:
+				autopilot_changed.emit(tk, on))
+		box.add_child(cb)
+		autopilot_buttons[task] = cb
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	box.add_child(row)
+	var all_on := Button.new()
+	all_on.text = "Включить всё"
+	all_on.size_flags_horizontal = SIZE_EXPAND_FILL
+	all_on.pressed.connect(func():
+		for task in BotBrain.ALL_TASKS:
+			autopilot_changed.emit(task, true))
+	row.add_child(all_on)
+	var all_off := Button.new()
+	all_off.text = "Выключить всё"
+	all_off.size_flags_horizontal = SIZE_EXPAND_FILL
+	all_off.pressed.connect(func():
+		for task in BotBrain.ALL_TASKS:
+			autopilot_changed.emit(task, false))
+	row.add_child(all_off)
+
+
+func toggle_autopilot() -> void:
+	var show := not autopilot_panel.visible
+	_hide_panels()
+	autopilot_panel.visible = show
+	if show:
+		_refresh_autopilot()
+
+
+func _refresh_autopilot() -> void:
+	var ap: Dictionary = world.factions[human]["autopilot"]
+	_autopilot_syncing = true
+	for task in autopilot_buttons:
+		autopilot_buttons[task].button_pressed = ap.get(task, false)
+	_autopilot_syncing = false
+	var n := ap.size()
+	var base := "Авто" if mobile else "Автопилот"
+	autopilot_button.text = ("%s · %d" % [base, n]) if n > 0 else base
+
+
+func _hide_panels() -> void:
+	tech_panel.visible = false
+	people_panel.visible = false
+	gov_panel.visible = false
+	missions_panel.visible = false
+	autopilot_panel.visible = false
+
+
+func any_panel_open() -> bool:
+	return tech_panel.visible or people_panel.visible or gov_panel.visible or missions_panel.visible or autopilot_panel.visible
+
+
+func _cycle_speed() -> void:
+	speed_index = (speed_index + 1) % SPEEDS.size()
+	speed_button.text = SPEED_LABELS[speed_index]
+	speed_changed.emit(SPEEDS[speed_index])
+
+
+func toggle_pause() -> void:
+	if SPEEDS[speed_index] == 0.0:
+		speed_index = 0
+	else:
+		speed_index = SPEEDS.size() - 1
+	speed_button.text = SPEED_LABELS[speed_index]
+	speed_changed.emit(SPEEDS[speed_index])
+
+
+func _menu_card(bar: Control, title: String, key: String, rows: Array, tint: Color, tip: String, cb: Callable) -> Button:
+	var b := Button.new()
+	b.custom_minimum_size = CARD_SIZE
+	b.tooltip_text = tip
+	b.pressed.connect(cb)
+	b.add_theme_stylebox_override("normal", ThemeFactory.pill(tint))
+	b.add_theme_stylebox_override("hover", ThemeFactory.pill(tint.lightened(0.15)))
+	b.add_theme_stylebox_override("pressed", ThemeFactory.pill(ThemeFactory.ORANGE))
+	var vb := VBoxContainer.new()
+	vb.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	vb.offset_top = 4
+	vb.alignment = BoxContainer.ALIGNMENT_CENTER
+	vb.mouse_filter = MOUSE_FILTER_IGNORE
+	b.add_child(vb)
+	vb.add_child(_icon(rows, "card_" + key, Vector2(40, 28)))
+	var t := _label(title, 10)
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(t)
+	var k := _label(key, 10, ThemeFactory.TEXT_DIM)
+	k.position = Vector2(8, 5)
+	b.add_child(k)
+	bar.add_child(b)
+	return b
+
+
+func _build_diplo_rows() -> void:
+	for id in range(1, world.factions.size()):
+		var f: Dictionary = world.factions[id]
+		if id == human or f["kind"] != world.Kind.BOT:
+			continue
+		var stack := VBoxContainer.new()
+		stack.add_theme_constant_override("separation", 4)
+		diplo_box.add_child(stack)
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		stack.add_child(row)
+		var swatch := ColorRect.new()
+		swatch.color = f["color"]
+		swatch.custom_minimum_size = Vector2(14, 14)
+		swatch.size_flags_vertical = SIZE_SHRINK_CENTER
+		swatch.mouse_filter = MOUSE_FILTER_IGNORE
+		row.add_child(swatch)
+		var text := VBoxContainer.new()
+		text.size_flags_horizontal = SIZE_EXPAND_FILL
+		text.add_theme_constant_override("separation", 0)
+		row.add_child(text)
+		var persona: Dictionary = Rules.PERSONAS.get(f["persona"], Rules.PERSONAS["trader"])
+		var name := _wrap(_label("%s · %s" % [f["name"], persona["name"]], 14))
+		text.add_child(name)
+		var info := _label("", 11, ThemeFactory.TEXT_DIM)
+		text.add_child(info)
+		var rel := _label("", 13)
+		rel.custom_minimum_size = Vector2(70 if mobile else 110, 0)
+		rel.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		row.add_child(rel)
+		var line: Container
+		if mobile:
+			var flow := HFlowContainer.new()
+			flow.add_theme_constant_override("h_separation", 4)
+			flow.add_theme_constant_override("v_separation", 4)
+			line = flow
+		else:
+			var hb := HBoxContainer.new()
+			hb.add_theme_constant_override("separation", 6)
+			line = hb
+		stack.add_child(line)
+		var buttons := {}
+		var tid := id
+		for pair in [["gift", "Подарок"], ["pact", "Пакт"], ["trade", "Торговля"], ["alliance", "Союз"], ["vassal", "Вассал"]]:
+			var b := Button.new()
+			b.text = pair[1]
+			b.custom_minimum_size = Vector2(0, 32)
+			b.size_flags_horizontal = SIZE_EXPAND_FILL
+			b.add_theme_font_size_override("font_size", 12)
+			var act: String = pair[0]
+			b.pressed.connect(_diplo_action.bind(act, tid))
+			line.add_child(b)
+			buttons[act] = b
+		diplo_rows[id] = {"name": name, "info": info, "rel": rel, "buttons": buttons, "line": line, "persona": persona["name"]}
+
+
+func _diplo_action(act: String, tid: int) -> void:
+	match act:
+		"gift":
+			gift.emit(tid)
+		"pact":
+			pact.emit(tid)
+		"trade":
+			trade_deal.emit(tid)
+		"alliance":
+			alliance.emit(tid)
+		"vassal":
+			vassalize.emit(tid)
+
+
+func _refresh_diplomacy(f: Dictionary) -> void:
+	if diplo_rows.is_empty():
+		_build_diplo_rows()
+	var attackers := {}
+	for a in world.incoming_attacks(human):
+		attackers[a["attacker"]] = true
+	for id in diplo_rows:
+		var r: Dictionary = diplo_rows[id]
+		var o: Dictionary = world.factions[id]
+		var bt: Dictionary = r["buttons"]
+		if not o["alive"]:
+			r["name"].text = o["name"] + " · выбыл"
+			r["info"].text = ""
+			r["rel"].text = ""
+			r["line"].visible = false
+			continue
+		var rel: float = world.relation_of(id, human)
+		var status := "мир"
+		if world.is_ally(human, id):
+			status = "союзник"
+		elif o["overlord"] == human:
+			status = "ваш вассал"
+		elif world.pact_active(human, id):
+			status = "пакт ещё %d с" % int(ceil(world.pact_seconds_left(human, id)))
+		elif attackers.has(id) and world.has_attack(human, id):
+			status = "война"
+		elif attackers.has(id):
+			status = "нападает на вас"
+		elif world.has_attack(human, id):
+			status = "вы нападаете"
+		if world.trade_active(human, id):
+			status += " · торговля"
+		r["name"].text = "%s · %s" % [o["name"], r["persona"]]
+		r["info"].text = "%.1f%% карты · %s войск · %s" % [world.land_share(id) * 100.0, Names.short_number(o["troops"]), status]
+		r["rel"].text = "отношения %d" % int(rel)
+		r["rel"].add_theme_color_override("font_color", ThemeFactory.GREEN if rel >= 60.0 else (Color("#D9731F") if rel >= Rules.PACT_MIN_RELATION else ThemeFactory.RED))
+		var gcost: int = world.gift_cost(human, id)
+		var pcost: int = world.pact_cost(human, id)
+		var tcost: int = world.trade_cost(human, id)
+		var acost: int = world.alliance_cost(human, id)
+		bt["gift"].text = "Подарок · " + Names.short_number(gcost)
+		bt["gift"].disabled = f["gold"] < gcost
+		bt["pact"].text = "Пакт · " + Names.short_number(pcost)
+		bt["pact"].disabled = f["gold"] < pcost or world.pact_active(human, id) or rel < Rules.PACT_MIN_RELATION
+		bt["pact"].tooltip_text = "Ненападение на %d с, нужны отношения от %d" % [Rules.PACT_SECONDS, int(Rules.PACT_MIN_RELATION)]
+		bt["trade"].text = "Торговля · " + Names.short_number(tcost)
+		bt["trade"].disabled = f["gold"] < tcost or world.trade_active(human, id) or rel < Rules.TRADE_MIN_RELATION
+		bt["trade"].tooltip_text = "+%d золота в секунду обоим на %d с, нужны отношения от %d" % [int(Rules.TRADE_INCOME_BASE + o["cells"] * Rules.TRADE_INCOME_PER_CELL), Rules.TRADE_SECONDS, int(Rules.TRADE_MIN_RELATION)]
+		bt["alliance"].text = "Союз · " + Names.short_number(acost)
+		bt["alliance"].disabled = f["gold"] < acost or world.is_ally(human, id) or rel < Rules.ALLIANCE_MIN_RELATION or o["overlord"] == human
+		bt["alliance"].tooltip_text = "Вечный пакт, союзник бьёт тех, кто напал на вас. Нужны отношения от %d" % int(Rules.ALLIANCE_MIN_RELATION)
+		bt["vassal"].text = "Вассал"
+		bt["vassal"].disabled = o["overlord"] != 0 or f["cells"] < o["cells"] * Rules.VASSAL_RATIO
+		bt["vassal"].tooltip_text = "Платит вам %d%% дохода и не воюет с вами. Нужно в %d раза больше земли и отношения от %d (или ваша атака на него)" % [int(Rules.VASSAL_TRIBUTE * 100.0), int(Rules.VASSAL_RATIO), int(Rules.VASSAL_MIN_RELATION)]
+
+
+func _build_spy_rows(page: VBoxContainer) -> void:
+	spy_target = OptionButton.new()
+	spy_target.custom_minimum_size = Vector2(0, 36)
+	for id in range(1, world.factions.size()):
+		var f: Dictionary = world.factions[id]
+		if id != human and f["kind"] == world.Kind.BOT:
+			spy_target.add_item(f["name"], id)
+	page.add_child(spy_target)
+	page.move_child(spy_target, 1)
+	spy_status = _label("", 12)
+	page.add_child(spy_status)
+	page.move_child(spy_status, 2)
+	for op in Rules.SPY_OP_ORDER:
+		var d: Dictionary = Rules.SPY_OPS[op]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		page.add_child(row)
+		var text := VBoxContainer.new()
+		text.size_flags_horizontal = SIZE_EXPAND_FILL
+		text.add_theme_constant_override("separation", 0)
+		row.add_child(text)
+		text.add_child(_wrap(_label(d["name"], 14)))
+		text.add_child(_label(d["desc"], 11, ThemeFactory.TEXT_DIM))
+		var chance := _label("", 13)
+		chance.custom_minimum_size = Vector2(60 if mobile else 90, 0)
+		chance.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		row.add_child(chance)
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(120 if mobile else 170, 34)
+		var ok: String = op
+		b.pressed.connect(func():
+			if spy_target.selected >= 0:
+				spy.emit(spy_target.get_item_id(spy_target.selected), ok))
+		row.add_child(b)
+		spy_rows[op] = {"chance": chance, "button": b}
+
+
+func _refresh_spy(f: Dictionary) -> void:
+	if spy_target == null:
+		_build_spy_rows(gov_pages[8])
+	var target: int = spy_target.get_item_id(spy_target.selected) if spy_target.selected >= 0 else -1
+	var cd: float = world.spy_cooldown(human)
+	spy_status.text = ("Агенты отдыхают: %d с" % int(ceil(cd))) if cd > 0.0 else "Агенты готовы"
+	for op in spy_rows:
+		var r: Dictionary = spy_rows[op]
+		var cost: int = Rules.SPY_OPS[op]["cost"]
+		var alive: bool = target > 0 and world.factions[target]["alive"]
+		r["chance"].text = ("%d%%" % int(round(world.spy_chance(human, target, op) * 100.0))) if alive else "—"
+		r["button"].text = "Провести · " + Names.short_number(cost)
+		r["button"].disabled = not alive or f["gold"] < cost or cd > 0.0
 
 
 # ------------------------------------------------------------------ events and api
@@ -1568,6 +1985,9 @@ func refresh(delta: float) -> void:
 			var lead: int = world.leader()
 			timer_bar.value = clampf(world.land_share(lead) * 100.0 / goal, 0.0, 1.0)
 			timer_label.text = "Вы выбыли · лидер %s: %.1f%%" % [world.factions[lead]["name"], world.land_share(lead) * 100.0]
+		var sd: Dictionary = Rules.SEASONS[world.season]
+		var left: int = Rules.SEASON_SECONDS - int(world.seconds()) % Rules.SEASON_SECONDS
+		season_label.text = "%s · %s · %d с" % [sd["name"], sd["desc"], left]
 
 	var cap: float = world.max_troops_of(human)
 	army_value.text = Names.short_number(f["troops"])
@@ -1601,6 +2021,10 @@ func refresh(delta: float) -> void:
 		_refresh_tech()
 	if people_panel.visible and _attacks_timer <= 0.0:
 		_refresh_people()
+	if missions_panel.visible and _lb_timer <= 0.0:
+		_refresh_missions()
+	if autopilot_panel.visible and _lb_timer <= 0.0:
+		_refresh_autopilot()
 	if gov_panel.visible and _lb_timer <= 0.0:
 		_refresh_gov()
 

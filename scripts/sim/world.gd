@@ -23,12 +23,19 @@ extends RefCounted
 ##   {type="project", player, project}                             start a national project
 ##   {type="gift", player, target}                                 send gold to a bot: relations up
 ##   {type="pact", player, target}                                 non-aggression pact for PACT_SECONDS
+##   {type="trade_deal", player, target}                           trade agreement: gold per second both ways
+##   {type="alliance", player, target}                             permanent pact, allies retaliate for you
+##   {type="vassalize", player, target}                            a much smaller rival pays tribute
+##   {type="spy", player, target, op}                              covert operation, see Rules.SPY_OPS
+##   {type="autopilot", player, task, on}                          let the AI run a part of your country
 ##   {type="admin",  player, code}                               cheat code: infinite resources
 
 const Rules := preload("res://scripts/sim/rules.gd")
 const Names := preload("res://scripts/sim/names.gd")
 const BotBrain := preload("res://scripts/sim/bot_brain.gd")
 const Content := preload("res://scripts/sim/content.gd")
+const Resources := preload("res://scripts/sim/resources.gd")
+const Missions := preload("res://scripts/sim/missions.gd")
 
 enum Kind { HUMAN, BOT, CITY }
 enum Phase { SPAWN, PLAY, FINISHED }
@@ -62,6 +69,13 @@ signal faction_eliminated(faction_id: int, by: int)
 signal action_rejected(action: Dictionary, reason: String)
 signal match_started
 signal match_finished(winner_id: int)
+signal season_changed(season: int)
+signal trade_signed(faction_id: int, target: int)
+signal alliance_formed(faction_id: int, target: int)
+signal vassal_gained(faction_id: int, target: int)
+signal spy_result(faction_id: int, target: int, op: String, success: bool, text: String)
+signal mission_done(faction_id: int, mission: Dictionary)
+signal news_posted(text: String, kind: String)
 
 var map
 var rng := RandomNumberGenerator.new()
@@ -84,6 +98,9 @@ var dirty := false
 var heat_dirty := false
 var scorch_dirty := false
 var winner_declared: int = 0          # faction that already triggered match_finished (the match may go on)
+var season: int = 0                   # index into Rules.SEASONS
+var difficulty: int = 1               # index into Rules.DIFFICULTIES
+var scenario: String = "free"        # key in Scenarios.LIST
 var _spawns: Array = []
 var _captured_now := PackedInt32Array()
 var _recent: Array = []               # ring of PackedInt32Array, newest first
@@ -132,6 +149,7 @@ func _init(m, game_seed: int, human_name: String = "Вы") -> void:
 		placed += 1
 	for i in Rules.NUM_BOTS:
 		var f := _new_faction(Names.bot_name(rng, used), Color.from_hsv(fmod(0.05 + i * 0.618034, 1.0), 0.48, 0.92), Kind.BOT)
+		f["persona"] = Rules.PERSONA_ORDER[rng.randi_range(0, Rules.PERSONA_ORDER.size() - 1)]
 		_spawn_blob(f, Rules.SPAWN_RADIUS, _find_spawn(Rules.SPAWN_RADIUS))
 		f["troops"] = float(Rules.START_TROOPS)
 		f["gold"] = float(Rules.BOT_START_GOLD)
@@ -162,6 +180,8 @@ func _new_faction(name: String, color: Color, kind: int) -> Dictionary:
 		"event": {}, "event_until": 0, "next_event": 0, "last_election": "",
 		"staff": {}, "seats": {}, "ruling": "", "agitation": {}, "bills": {}, "extra": {}, "budget": {},
 		"reforms": _default_reforms(), "projects": {}, "projects_done": {}, "relations": {}, "pacts": {},
+		"res": {}, "counters": {}, "trade": {}, "allies": {}, "vassals": {}, "overlord": 0, "persona": "",
+		"missions": [], "spy_cd": 0, "autopilot": {},
 		"mods": {}, "mods_dirty": true,
 		"history": {"gold": PackedFloat32Array(), "troops": PackedFloat32Array(), "cells": PackedFloat32Array(),
 			"approval": PackedFloat32Array(), "income": PackedFloat32Array()},
@@ -177,6 +197,32 @@ static func _default_reforms() -> Dictionary:
 	for axis in Rules.REFORM_ORDER:
 		r[axis] = Rules.REFORMS[axis]["default"]
 	return r
+
+
+## Recompute every faction's border set from the owner array (after loading a save).
+func rebuild_borders() -> void:
+	for id in range(1, factions.size()):
+		factions[id]["border"] = {}
+	for i in map.land_cells:
+		if owner[i] != 0:
+			_refresh_border(i)
+
+
+## Free spot for the human next to a city (spiral search); -1 if nothing fits.
+func spawn_near(cell: int, radius: int = Rules.SPAWN_RADIUS) -> int:
+	var c: Vector2i = map.cell(cell)
+	for ring in range(2, 40):
+		for dy in range(-ring, ring + 1):
+			for dx in range(-ring, ring + 1):
+				if absi(dx) != ring and absi(dy) != ring:
+					continue
+				var p := c + Vector2i(dx, dy)
+				if not map.in_bounds(p):
+					continue
+				var i: int = map.index(p)
+				if map.is_land(i) and owner[i] == 0 and _blob_ok(i, radius, Rules.MIN_SPAWN_DISTANCE * 0.6):
+					return i
+	return -1
 
 
 func _blob_ok(center: int, radius: int, min_distance: float) -> bool:
@@ -256,6 +302,9 @@ func _start_match() -> void:
 		if f["kind"] != Kind.CITY:
 			f["next_election"] = tick + int(Rules.ELECTION_PERIOD * Rules.TICKS_PER_SEC)
 	factions[human]["next_event"] = tick + rng.randi_range(Rules.EVENT_MIN_TICKS, Rules.EVENT_MAX_TICKS)
+	var ms: Array = factions[human]["missions"]
+	while ms.size() < Missions.ACTIVE:
+		ms.append(Missions.draw(self, human, ms, 0))
 	for id in range(1, factions.size()):
 		if factions[id]["kind"] != Kind.CITY:
 			_update_duma(id)
@@ -278,12 +327,22 @@ func _set_owner(i: int, new_owner: int) -> void:
 		fo["border"].erase(i)
 		if buildings_at.has(i):
 			_remove_building(i)
+		if map.resources[i] != 0:
+			var k: int = map.resources[i]
+			fo["res"][k] = int(fo["res"].get(k, 0)) - 1
+			fo["mods_dirty"] = true
 	owner[i] = new_owner
 	if new_owner != 0:
 		var fn: Dictionary = factions[new_owner]
 		fn["cells"] += 1
+		if old != 0 and phase == Phase.PLAY:
+			fn["counters"]["captured_enemy"] = int(fn["counters"].get("captured_enemy", 0)) + 1
 		fn["sum_x"] += c.x
 		fn["sum_y"] += c.y
+		if map.resources[i] != 0:
+			var k: int = map.resources[i]
+			fn["res"][k] = int(fn["res"].get(k, 0)) + 1
+			fn["mods_dirty"] = true
 	_refresh_border(i)
 	for n in map.neighbors(i):
 		_refresh_border(n)
@@ -387,6 +446,12 @@ func mods_of(fid: int) -> Dictionary:
 	for key in f["projects_done"]:
 		if f["projects_done"][key]:
 			Content.merge_mods(m, Rules.PROJECTS[key]["mods"])
+	for kind in f["res"]:
+		var n: int = mini(int(f["res"][kind]), Resources.STACK_CAP)
+		if n > 0:
+			Content.merge_mods(m, Resources.KINDS[kind]["mods"], n)
+	if f["kind"] != Kind.CITY:
+		Content.merge_mods(m, Rules.SEASONS[season]["mods"])
 	f["mods"] = m
 	f["mods_dirty"] = false
 	return m
@@ -457,7 +522,10 @@ func relation_of(a: int, b: int) -> float:
 
 
 func pact_active(a: int, b: int) -> bool:
-	return int(factions[a]["pacts"].get(b, 0)) > tick
+	if int(factions[a]["pacts"].get(b, 0)) > tick:
+		return true
+	var fa: Dictionary = factions[a]
+	return bool(fa["allies"].get(b, false)) or fa["overlord"] == b or factions[b]["overlord"] == a
 
 
 func pact_seconds_left(a: int, b: int) -> float:
@@ -590,6 +658,8 @@ func income_breakdown(fid: int) -> Dictionary:
 		"Порты": f["ports"] * Rules.PORT_GOLD * mult,
 		"Рынки": f["markets"] * Rules.MARKET_GOLD,
 		"Постройки": mod(fid, "gold_flat"),
+		"Торговля": trade_income(fid),
+		"Дань": tribute_of(fid),
 		"Зарплаты": -salaries_of(fid),
 		"Бюджет": -budget_cost(fid),
 	}
@@ -619,7 +689,10 @@ func growth_of(fid: int) -> float:
 	if f["kind"] == Kind.CITY:
 		return f["troops"] * Rules.CITY_STATE_INTEREST + 1.0
 	var extra: float = tech_level(fid, "conscription") * Rules.CONSCRIPTION_BONUS + f["barracks"] * Rules.BARRACKS_INTEREST + mod(fid, "interest")
-	return Rules.growth_per_sec(f["troops"], f["cells"], f["cities"], extra) * approval_factor(fid)
+	var g: float = Rules.growth_per_sec(f["troops"], f["cells"], f["cities"], extra) * approval_factor(fid)
+	if f["kind"] == Kind.BOT:
+		g *= Rules.DIFFICULTIES[difficulty]["bot_growth"]
+	return g
 
 
 func population_of(fid: int) -> int:
@@ -635,7 +708,77 @@ func gold_rate_of(fid: int) -> float:
 	if tick < f["loss_until"]:
 		rate *= Rules.ELECTION_LOSS_GOLD
 	rate = rate * mod(fid, "gold") + mod(fid, "gold_flat")
+	if f["kind"] == Kind.BOT:
+		rate *= Rules.DIFFICULTIES[difficulty]["bot_gold"]
+	rate += trade_income(fid) + tribute_of(fid)
 	return rate - salaries_of(fid) - budget_cost(fid)
+
+
+func grace_seconds() -> float:
+	return float(Rules.DIFFICULTIES[difficulty]["grace"])
+
+
+func trade_active(a: int, b: int) -> bool:
+	return int(factions[a]["trade"].get(b, 0)) > tick
+
+
+func trade_cost(fid: int, _target: int) -> int:
+	return int(round(Rules.TRADE_COST * mod(fid, "pact_cost")))
+
+
+func alliance_cost(fid: int, target: int) -> int:
+	return int(round((Rules.ALLIANCE_COST + factions[target]["cells"] * Rules.PACT_COST_PER_CELL) * mod(fid, "pact_cost")))
+
+
+func is_ally(a: int, b: int) -> bool:
+	return bool(factions[a]["allies"].get(b, false))
+
+
+func trade_income(fid: int) -> float:
+	var total := 0.0
+	for o in factions[fid]["trade"]:
+		if int(factions[fid]["trade"][o]) > tick and factions[o]["alive"]:
+			total += Rules.TRADE_INCOME_BASE + factions[o]["cells"] * Rules.TRADE_INCOME_PER_CELL
+	return total
+
+
+## Tribute received from vassals minus tribute paid to an overlord (a share of the plain land income).
+func tribute_of(fid: int) -> float:
+	var f: Dictionary = factions[fid]
+	var total := 0.0
+	for v in f["vassals"]:
+		if f["vassals"][v] and factions[v]["alive"]:
+			total += _base_income(v) * Rules.VASSAL_TRIBUTE
+	if f["overlord"] != 0 and factions[f["overlord"]]["alive"]:
+		total -= _base_income(fid) * Rules.VASSAL_TRIBUTE
+	return total
+
+
+func _base_income(fid: int) -> float:
+	var f: Dictionary = factions[fid]
+	return Rules.gold_per_sec(f["cells"], f["ports"]) + f["markets"] * Rules.MARKET_GOLD
+
+
+func spy_chance(fid: int, target: int, op: String) -> float:
+	var c: float = Rules.SPY_OPS[op]["chance"]
+	if has_minister(fid, "spy"):
+		c += Rules.SPY_MINISTER_BONUS
+	if has_minister(target, "spy"):
+		c -= Rules.SPY_COUNTER_MALUS
+	return clampf(c, 0.05, 0.95)
+
+
+func spy_cooldown(fid: int) -> float:
+	return maxf(0.0, (int(factions[fid]["spy_cd"]) - tick) * Rules.TICK_DT)
+
+
+func _count(fid: int, key: String, n: int = 1) -> void:
+	var c: Dictionary = factions[fid]["counters"]
+	c[key] = int(c.get(key, 0)) + n
+
+
+func _news(text: String, kind: String) -> void:
+	news_posted.emit(text, kind)
 
 
 func approval_target(fid: int) -> float:
@@ -685,6 +828,8 @@ func capture_cost(attacker: int, target: int, cell: int) -> float:
 	mult *= mod(attacker, "capture")
 	if scorched.has(cell):
 		mult *= Rules.SCORCH_COST_MULT
+	if season == 3 and (map.terrain[cell] == 4 or map.terrain[cell] == 5):
+		mult *= Rules.WINTER_TERRAIN_MULT
 	if target == 0:
 		return Rules.CAPTURE_COST_EMPTY * mult
 	var d: Dictionary = factions[target]
@@ -810,6 +955,8 @@ func step() -> void:
 			var f: Dictionary = factions[id]
 			if f["kind"] == Kind.BOT and f["alive"] and (tick + id * 7) % Rules.BOT_PERIOD_TICKS == 0:
 				BotBrain.think(self, id)
+	if tick % Rules.BOT_PERIOD_TICKS == 0 and not factions[human]["autopilot"].is_empty():
+		BotBrain.autopilot(self, human, factions[human]["autopilot"])
 	if tick % Rules.TICKS_PER_SEC == 0:
 		_politics_second()
 	if tick % Rules.HISTORY_PERIOD_TICKS == 0 and factions[human]["alive"]:
@@ -822,6 +969,22 @@ func step() -> void:
 		territory_changed.emit()
 	if tick % Rules.TICKS_PER_SEC == 0:
 		_check_victory()
+		_tick_season()
+
+
+func _tick_season() -> void:
+	var s: int = int(seconds() / Rules.SEASON_SECONDS) % Rules.SEASONS.size()
+	if s == season:
+		return
+	season = s
+	for id in range(1, factions.size()):
+		factions[id]["mods_dirty"] = true
+	season_changed.emit(season)
+	_news("Наступает %s: %s" % [Rules.SEASONS[season]["name"].to_lower(), Rules.SEASONS[season]["desc"]], "world")
+
+
+func resource_count(fid: int, kind: int) -> int:
+	return int(factions[fid]["res"].get(kind, 0))
 
 
 ## The match has no clock: it ends when a player holds WIN_LAND_SHARE of the land or is the last one standing.
@@ -885,11 +1048,27 @@ func _politics_second() -> void:
 			_hold_election(id)
 		_advance_projects(id)
 		_drift_relations(id)
+	_check_missions()
 	var h: Dictionary = factions[human]
 	if h["alive"] and h["event"].is_empty() and tick >= h["next_event"]:
 		_offer_event()
 	elif not h["event"].is_empty() and tick >= h["event_until"]:
 		_resolve_event(human, 0)
+
+
+func _check_missions() -> void:
+	var h: Dictionary = factions[human]
+	if not h["alive"]:
+		return
+	var ms: Array = h["missions"]
+	for i in ms.size():
+		var m: Dictionary = ms[i]
+		if Missions.done(self, human, m):
+			h["gold"] += float(m["gold"])
+			_count(human, "missions_done")
+			_count(human, "xp_match", int(m["xp"]))
+			mission_done.emit(human, m)
+			ms[i] = Missions.draw(self, human, ms, int(h["counters"]["missions_done"]))
 
 
 func _advance_projects(fid: int) -> void:
@@ -908,6 +1087,8 @@ func _advance_projects(fid: int) -> void:
 		f["approval"] = clampf(f["approval"] + float(Rules.PROJECTS[key]["approval"]), 0.0, 100.0)
 		f["mods_dirty"] = true
 		project_done.emit(fid, key)
+		if fid != human and f["cells"] > 1500:
+			_news("%s завершает нацпроект «%s»" % [f["name"], Rules.PROJECTS[key]["name"]], "world")
 
 
 func _drift_relations(fid: int) -> void:
@@ -946,11 +1127,15 @@ func _hold_election(fid: int) -> void:
 		f["elections_won"] += 1
 		f["approval"] = minf(100.0, f["approval"] + Rules.ELECTION_WIN_BONUS)
 		f["last_election"] = "победа"
+		_count(fid, "election_streak")
 	else:
 		f["elections_lost"] += 1
 		f["loss_until"] = tick + Rules.ELECTION_LOSS_TICKS
 		f["approval"] = Rules.ELECTION_LOSS_APPROVAL
 		f["last_election"] = "поражение"
+		f["counters"]["election_streak"] = 0
+		if fid != human and f["cells"] > 1000:
+			_news("%s проигрывает выборы" % f["name"], "politics")
 	election_result.emit(fid, won, f["approval"])
 
 
@@ -1125,6 +1310,10 @@ func _eliminate(fid: int, by: int) -> void:
 	f["alive"] = false
 	f["troops"] = 0.0
 	f["border"].clear()
+	if by > 0:
+		_count(by, "kills")
+	if f["kind"] != Kind.CITY:
+		_news("%s уничтожает %s" % [factions[by]["name"] if by > 0 else "Народ", f["name"]], "war")
 	faction_eliminated.emit(fid, by)
 
 
@@ -1183,12 +1372,15 @@ func launch_attack(fid: int, target: int, ratio: float, cell: int = -1) -> Strin
 			ships.append({"attacker": fid, "target": target, "troops": amount, "cell": cell, "from": from, "ticks_left": ticks, "total": ticks})
 			ship_launched.emit(fid, from, cell, ticks)
 			_relation_hit(target, fid)
+			_count(fid, "landings")
 			return ""
 	if front.is_empty():
 		return "Нет общей границы"
 	f["troops"] -= amount
 	_add_attack(fid, target, amount, front)
 	_relation_hit(target, fid)
+	if fid != human and target != human and target != 0 and amount >= 2000.0 and factions[target]["kind"] != Kind.CITY:
+		_news("%s нападает на %s (%s войск)" % [f["name"], factions[target]["name"], Names.short_number(amount)], "war")
 	return ""
 
 
@@ -1352,6 +1544,7 @@ func _apply(a: Dictionary) -> String:
 			var flight: int = Rules.NUKE_FLIGHT_TICKS / 2 if tech_level(fid, "rockets") > 0 else Rules.NUKE_FLIGHT_TICKS
 			missiles.append({"player": fid, "cell": c, "from": from, "mega": mega, "ticks_left": flight})
 			nuke_launched.emit(fid, from, c, flight, mega)
+			_count(fid, "meganukes" if mega else "nukes")
 			return ""
 		"tax":
 			f["tax"] = clampi(int(a["level"]), 0, 3)
@@ -1485,7 +1678,10 @@ func _apply(a: Dictionary) -> String:
 			f["reforms"][axis] = option
 			f["approval"] = maxf(0.0, f["approval"] - Rules.REFORM_APPROVAL_HIT)
 			f["mods_dirty"] = true
+			_count(fid, "reforms_done")
 			reform_changed.emit(fid, axis, option)
+			if fid != human and f["cells"] > 1500:
+				_news("%s: %s — %s" % [f["name"], Rules.REFORMS[axis]["name"].to_lower(), Rules.REFORMS[axis]["options"][option]["name"]], "politics")
 			return ""
 		"project":
 			var key: String = a["project"]
@@ -1541,7 +1737,164 @@ func _apply(a: Dictionary) -> String:
 			factions[target]["pacts"][fid] = until
 			cancel_attack(fid, target)
 			cancel_attack(target, fid)
+			_count(fid, "pacts_signed")
 			pact_signed.emit(fid, target)
+			return ""
+		"trade_deal":
+			var target: int = int(a["target"])
+			if target <= 0 or target >= factions.size() or target == fid or factions[target]["kind"] == Kind.CITY:
+				return "Не с кем торговать"
+			if not factions[target]["alive"]:
+				return "Этой фракции больше нет"
+			if trade_active(fid, target):
+				return "Договор уже действует"
+			var rel := relation_of(target, fid)
+			if rel < Rules.TRADE_MIN_RELATION:
+				return "%s не хочет торговать: отношения %d (нужно %d)" % [factions[target]["name"], int(rel), int(Rules.TRADE_MIN_RELATION)]
+			var cost := trade_cost(fid, target)
+			if f["gold"] < cost:
+				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
+			f["gold"] -= cost
+			var until: int = tick + Rules.TRADE_SECONDS * Rules.TICKS_PER_SEC
+			f["trade"][target] = until
+			factions[target]["trade"][fid] = until
+			_count(fid, "trades_made")
+			trade_signed.emit(fid, target)
+			return ""
+		"alliance":
+			var target: int = int(a["target"])
+			if target <= 0 or target >= factions.size() or target == fid or factions[target]["kind"] == Kind.CITY:
+				return "Не с кем заключать союз"
+			if not factions[target]["alive"]:
+				return "Этой фракции больше нет"
+			if is_ally(fid, target):
+				return "Вы уже союзники"
+			var rel := relation_of(target, fid)
+			if rel < Rules.ALLIANCE_MIN_RELATION:
+				return "%s не готов к союзу: отношения %d (нужно %d)" % [factions[target]["name"], int(rel), int(Rules.ALLIANCE_MIN_RELATION)]
+			var cost := alliance_cost(fid, target)
+			if f["gold"] < cost:
+				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
+			f["gold"] -= cost
+			f["allies"][target] = true
+			factions[target]["allies"][fid] = true
+			cancel_attack(fid, target)
+			cancel_attack(target, fid)
+			_count(fid, "allies_made")
+			alliance_formed.emit(fid, target)
+			return ""
+		"vassalize":
+			var target: int = int(a["target"])
+			if target <= 0 or target >= factions.size() or target == fid or factions[target]["kind"] == Kind.CITY:
+				return "Некого делать вассалом"
+			var t: Dictionary = factions[target]
+			if not t["alive"]:
+				return "Этой фракции больше нет"
+			if t["overlord"] != 0:
+				return "%s уже чей-то вассал" % t["name"]
+			if f["overlord"] != 0:
+				return "Вассал не может иметь вассалов"
+			if f["cells"] < t["cells"] * Rules.VASSAL_RATIO:
+				return "%s не покорится: нужно в %d раза больше земли, чем у него" % [t["name"], int(Rules.VASSAL_RATIO)]
+			if relation_of(target, fid) < Rules.VASSAL_MIN_RELATION and not has_attack(fid, target):
+				return "%s отказывается: отношения ниже %d и вы на него не давите" % [t["name"], int(Rules.VASSAL_MIN_RELATION)]
+			t["overlord"] = fid
+			f["vassals"][target] = true
+			t["relations"][fid] = 60.0
+			cancel_attack(fid, target)
+			cancel_attack(target, fid)
+			_count(fid, "vassals")
+			vassal_gained.emit(fid, target)
+			return ""
+		"spy":
+			var target: int = int(a["target"])
+			var op: String = a["op"]
+			if not Rules.SPY_OPS.has(op):
+				return "Нет такой операции"
+			if target <= 0 or target >= factions.size() or target == fid or factions[target]["kind"] == Kind.CITY:
+				return "Нет такой цели"
+			var t: Dictionary = factions[target]
+			if not t["alive"]:
+				return "Этой фракции больше нет"
+			if spy_cooldown(fid) > 0.0:
+				return "Агенты ещё не готовы (%d с)" % int(ceil(spy_cooldown(fid)))
+			var cost: int = Rules.SPY_OPS[op]["cost"]
+			if f["gold"] < cost:
+				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
+			var text := ""
+			var pick := ""
+			match op:
+				"steal_tech":
+					var options: Array = []
+					for key in Rules.TECH_ORDER + Rules.EXTRA_TECH_ORDER:
+						if tech_level(target, key) > tech_level(fid, key) and tech_level(fid, key) < tech_def(key)["max"]:
+							options.append(key)
+					if options.is_empty():
+						return "У цели нет технологий, которых нет у вас"
+					pick = options[rng.randi_range(0, options.size() - 1)]
+				"assassinate":
+					var options: Array = []
+					for key in t["staff"]:
+						if t["staff"][key]:
+							options.append(key)
+					if options.is_empty():
+						return "У цели нет министров"
+					pick = options[rng.randi_range(0, options.size() - 1)]
+				"arson":
+					var options: Array = []
+					for c in buildings_at:
+						if buildings_at[c]["faction"] == target:
+							options.append(c)
+					if options.is_empty():
+						return "У цели нет построек"
+					pick = str(options[rng.randi_range(0, options.size() - 1)])
+				"bribe":
+					if not has_attack(target, fid):
+						return "%s на вас не нападает" % t["name"]
+			f["gold"] -= cost
+			f["spy_cd"] = tick + Rules.SPY_COOLDOWN_TICKS
+			var success: bool = rng.randf() < spy_chance(fid, target, op)
+			if success:
+				match op:
+					"sabotage":
+						t["troops"] *= 0.9
+						text = "%s теряет 10%% войск" % t["name"]
+					"steal_tech":
+						f["tech"][pick] = tech_level(fid, pick) + 1
+						f["mods_dirty"] = true
+						tech_researched.emit(fid, pick, f["tech"][pick])
+						text = "Украдены чертежи: %s" % tech_def(pick)["name"]
+					"incite":
+						t["approval"] = maxf(0.0, t["approval"] - 15.0)
+						text = "В %s волнения: одобрение −15" % t["name"]
+					"assassinate":
+						t["staff"][pick] = false
+						t["mods_dirty"] = true
+						text = "%s остаётся без должности «%s»" % [t["name"], Rules.MINISTERS[pick]["name"]]
+					"arson":
+						var c := int(pick)
+						var kind: String = buildings_at[c]["kind"]
+						_remove_building(c)
+						building_removed.emit(c)
+						text = "Сгорела постройка %s: %s" % [t["name"], kind]
+					"bribe":
+						cancel_attack(target, fid)
+						text = "Генералы %s отзывают войска" % t["name"]
+				_count(fid, "spy_ok")
+			else:
+				var rel: Dictionary = t["relations"]
+				rel[fid] = maxf(0.0, float(rel.get(fid, Rules.RELATION_START)) - Rules.SPY_FAIL_RELATION)
+				text = "Агент пойман, %s в ярости (отношения −%d)" % [t["name"], int(Rules.SPY_FAIL_RELATION)]
+			spy_result.emit(fid, target, op, success, text)
+			return ""
+		"autopilot":
+			var task: String = a["task"]
+			if not (task in BotBrain.ALL_TASKS):
+				return "Нет такой задачи автопилота"
+			if bool(a["on"]):
+				f["autopilot"][task] = true
+			else:
+				f["autopilot"].erase(task)
 			return ""
 		"research":
 			var key: String = a["tech"]

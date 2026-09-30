@@ -3,10 +3,14 @@ extends Control
 
 const ThemeFactory := preload("res://scripts/ui/theme_factory.gd")
 const Rules := preload("res://scripts/sim/rules.gd")
+const Scenarios := preload("res://scripts/sim/scenarios.gd")
+const Save := preload("res://scripts/sim/save.gd")
+const Achievements := preload("res://scripts/sim/achievements.gd")
 
 var nick_edit: LineEdit
 var help_panel: PanelContainer
 var sound_check: CheckBox
+var scenario_desc: Label
 
 
 func _ready() -> void:
@@ -32,24 +36,30 @@ func _ready() -> void:
 
 	var mobile: bool = settings != null and settings.mobile
 	var panel := PanelContainer.new()
-	if mobile:
-		panel.set_anchors_and_offsets_preset(PRESET_CENTER)
-		var half: float = minf(220.0, get_viewport_rect().size.x / 2.0 - 10.0)
-		panel.offset_left = -half
-		panel.offset_right = half
-		panel.offset_top = -250
-		panel.offset_bottom = 250
-	else:
-		panel.set_anchors_and_offsets_preset(PRESET_CENTER)
-		panel.offset_left = -220
-		panel.offset_right = 220
-		panel.offset_top = -250
-		panel.offset_bottom = 250
-	add_child(panel)
 	var box := VBoxContainer.new()
 	box.alignment = BoxContainer.ALIGNMENT_CENTER
 	box.add_theme_constant_override("separation", 12)
-	panel.add_child(box)
+	if mobile:
+		# the phone menu fills the screen and scrolls when it does not fit (landscape)
+		panel.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+		panel.offset_left = 8
+		panel.offset_right = -8
+		panel.offset_top = 8
+		panel.offset_bottom = -56
+		add_child(panel)
+		var scroll := ScrollContainer.new()
+		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		panel.add_child(scroll)
+		box.size_flags_horizontal = SIZE_EXPAND_FILL
+		scroll.add_child(box)
+	else:
+		panel.set_anchors_and_offsets_preset(PRESET_CENTER)
+		panel.offset_left = -240
+		panel.offset_right = 240
+		panel.offset_top = -340
+		panel.offset_bottom = 340
+		add_child(panel)
+		panel.add_child(box)
 	var title := Label.new()
 	title.text = "MEDSTRAT"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -86,7 +96,7 @@ func _ready() -> void:
 		var b := Button.new()
 		b.toggle_mode = true
 		b.button_group = color_group
-		b.custom_minimum_size = Vector2(44, 34)
+		b.custom_minimum_size = Vector2(30 if mobile else 44, 34)
 		b.size_flags_horizontal = SIZE_EXPAND_FILL
 		b.add_theme_stylebox_override("normal", ThemeFactory.box(c, c.darkened(0.15), 4, 10))
 		b.add_theme_stylebox_override("hover", ThemeFactory.box(c.lightened(0.1), c.darkened(0.15), 4, 10))
@@ -99,12 +109,75 @@ func _ready() -> void:
 				settings.save())
 		color_row.add_child(b)
 
+	# historical start and difficulty
+	var sc_row := HBoxContainer.new()
+	sc_row.add_theme_constant_override("separation", 10)
+	box.add_child(sc_row)
+	var sc_label := Label.new()
+	sc_label.text = "Сценарий:"
+	sc_row.add_child(sc_label)
+	var sc_opt := OptionButton.new()
+	sc_opt.size_flags_horizontal = SIZE_EXPAND_FILL
+	sc_opt.fit_to_longest_item = false
+	sc_opt.custom_minimum_size = Vector2(0, 36)
+	for i in Scenarios.ORDER.size():
+		sc_opt.add_item(Scenarios.LIST[Scenarios.ORDER[i]]["name"], i)
+		if settings != null and settings.scenario == Scenarios.ORDER[i]:
+			sc_opt.select(i)
+	sc_row.add_child(sc_opt)
+	scenario_desc = Label.new()
+	scenario_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	scenario_desc.add_theme_font_size_override("font_size", 11)
+	scenario_desc.add_theme_color_override("font_color", ThemeFactory.TEXT_DIM)
+	scenario_desc.text = Scenarios.get_def(settings.scenario if settings != null else "free")["desc"]
+	box.add_child(scenario_desc)
+	sc_opt.item_selected.connect(func(i):
+		var key: String = Scenarios.ORDER[i]
+		scenario_desc.text = Scenarios.LIST[key]["desc"]
+		if settings != null:
+			settings.scenario = key
+			settings.save())
+	var df_row := HBoxContainer.new()
+	df_row.add_theme_constant_override("separation", 10)
+	box.add_child(df_row)
+	var df_label := Label.new()
+	df_label.text = "Сложность:"
+	df_row.add_child(df_label)
+	var df_opt := OptionButton.new()
+	df_opt.size_flags_horizontal = SIZE_EXPAND_FILL
+	df_opt.fit_to_longest_item = false
+	df_opt.custom_minimum_size = Vector2(0, 36)
+	for i in Rules.DIFFICULTIES.size():
+		df_opt.add_item(Rules.DIFFICULTIES[i]["name"], i)
+	df_opt.select(clampi(settings.difficulty, 0, Rules.DIFFICULTIES.size() - 1) if settings != null else 1)
+	df_opt.tooltip_text = "Опыт за матч растёт со сложностью"
+	df_opt.item_selected.connect(func(i):
+		if settings != null:
+			settings.difficulty = i
+			settings.save())
+	df_row.add_child(df_opt)
+
 	var start := _button(box, "Новая игра", _start)
+	if Save.exists():
+		var cont := _button(box, "Продолжить: " + Save.summary(), func():
+			if settings != null:
+				settings.load_save = true
+			get_tree().change_scene_to_file("res://scenes/game.tscn"))
+		cont.add_theme_font_size_override("font_size", 13)
+	if settings != null:
+		var n := 0
+		for k in settings.unlocked:
+			if settings.unlocked[k]:
+				n += 1
+		var prof := Label.new()
+		prof.text = "Уровень %d · %s · %d XP · достижений %d/%d · побед %d из %d" % [settings.level(), settings.title(), settings.xp, n, Achievements.ORDER.size(), int(settings.stats.get("wins", 0)), int(settings.stats.get("matches", 0))]
+		prof.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		prof.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		prof.add_theme_font_size_override("font_size", 12)
+		prof.add_theme_color_override("font_color", Color("#D9731F"))
+		box.add_child(prof)
 	start.add_theme_stylebox_override("normal", ThemeFactory.pill(ThemeFactory.ORANGE, 8))
 	start.add_theme_stylebox_override("hover", ThemeFactory.pill(ThemeFactory.ORANGE.lightened(0.15), 8))
-	var net := _button(box, "Сетевая игра", Callable())
-	net.disabled = true
-	net.tooltip_text = "Появится на следующем этапе"
 	_button(box, "Как играть", func(): help_panel.visible = not help_panel.visible)
 	sound_check = CheckBox.new()
 	sound_check.text = "Звук"

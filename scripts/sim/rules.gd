@@ -6,6 +6,14 @@ const TICK_DT := 1.0 / TICKS_PER_SEC
 const WIN_LAND_SHARE := 0.5              # no clock: the match ends when someone holds this share of the land (or stands alone)
 const SPAWN_SECONDS := 20                # time to pick a starting point before the human is placed automatically
 const HEAT_TICKS := 14                   # freshly captured cells glow for this many ticks
+const SEASON_SECONDS := 120              # spring, summer, autumn, winter, each this long
+const SEASONS := [
+	{"name": "Весна", "desc": "+5% роста армии", "mods": {"growth": 1.05}, "tint": "#B7C96A"},
+	{"name": "Лето", "desc": "+8% золота, корабли на 10% быстрее", "mods": {"gold": 1.08, "ship_speed": 1.1}, "tint": "#F4D77A"},
+	{"name": "Осень", "desc": "Урожай: +2 одобрение, +3% золота", "mods": {"approval": 2.0, "gold": 1.03}, "tint": "#FF8F45"},
+	{"name": "Зима", "desc": "−8% роста, корабли на 15% медленнее, снег и горы дороже", "mods": {"growth": 0.92, "ship_speed": 0.85}, "tint": "#7FB9E6"},
+]
+const WINTER_TERRAIN_MULT := 1.3          # capture cost on snow and mountains in winter
 
 # --- spawning
 const NUM_BOTS := 12
@@ -227,6 +235,47 @@ const BOT_RETALIATE_SHARE := 0.3         # attacked bots strike back at this sha
 const BOT_RATIO_RETALIATE := 0.4
 const BOT_NUKE_CHANCE := 0.25            # per decision, when a nuke is affordable and a big neighbour exists
 const BOT_NAVAL_CHANCE := 0.5
+const DIFFICULTIES := [
+	{"name": "Лёгкая", "desc": "Боты растут медленнее, первые 2 минуты вас не трогают", "bot_growth": 0.75, "bot_gold": 0.75, "grace": 120, "xp": 0.6},
+	{"name": "Обычная", "desc": "Честный матч", "bot_growth": 1.0, "bot_gold": 1.0, "grace": 60, "xp": 1.0},
+	{"name": "Сложная", "desc": "Боты на 25% сильнее и нападают раньше", "bot_growth": 1.25, "bot_gold": 1.3, "grace": 30, "xp": 1.5},
+	{"name": "Кошмар", "desc": "Боты на 60% сильнее, пощады нет с первой секунды", "bot_growth": 1.6, "bot_gold": 1.7, "grace": 0, "xp": 2.5},
+]
+## Bot personalities: multipliers on appetite. enemy_share = troop share before attacking someone,
+## ratio = share of the army sent, nuke/build/naval scale chances, defense_max = defense levels built.
+const PERSONAS := {
+	"aggressor": {"name": "агрессор", "desc": "нападает раньше и большими силами", "enemy_share": 0.4, "ratio": 0.75, "nuke": 1.6, "build": 0.7, "naval": 0.5, "defense_max": 2, "retaliate": 0.7},
+	"trader": {"name": "торговец", "desc": "строит и торгует, воюет неохотно", "enemy_share": 0.65, "ratio": 0.5, "nuke": 0.5, "build": 2.0, "naval": 0.4, "defense_max": 3, "retaliate": 1.0},
+	"turtle": {"name": "черепаха", "desc": "обороняется и редко нападает", "enemy_share": 0.8, "ratio": 0.45, "nuke": 0.3, "build": 1.2, "naval": 0.2, "defense_max": 6, "retaliate": 0.8},
+	"explorer": {"name": "мореход", "desc": "любит высадки с моря", "enemy_share": 0.55, "ratio": 0.6, "nuke": 0.8, "build": 1.0, "naval": 1.2, "defense_max": 3, "retaliate": 1.0},
+	"schemer": {"name": "интриган", "desc": "бомбы, шпионы и подкуп", "enemy_share": 0.55, "ratio": 0.6, "nuke": 2.0, "build": 1.0, "naval": 0.5, "defense_max": 3, "retaliate": 1.0},
+}
+const PERSONA_ORDER := ["aggressor", "trader", "turtle", "explorer", "schemer"]
+
+# --- diplomacy 2: trade, alliances, vassals, espionage
+const TRADE_COST := 1500
+const TRADE_SECONDS := 300
+const TRADE_MIN_RELATION := 50.0
+const TRADE_INCOME_BASE := 3.0           # gold per second per partner...
+const TRADE_INCOME_PER_CELL := 0.02      # ...plus this per partner cell
+const ALLIANCE_COST := 4000
+const ALLIANCE_MIN_RELATION := 75.0
+const VASSAL_RATIO := 4.0                # you need this many times their land
+const VASSAL_MIN_RELATION := 30.0
+const VASSAL_TRIBUTE := 0.10             # share of the vassal's income paid to the overlord
+const SPY_OPS := {
+	"sabotage": {"name": "Саботаж", "desc": "Цель теряет 10% войск", "cost": 3000, "chance": 0.6},
+	"steal_tech": {"name": "Кража технологии", "desc": "Получите уровень технологии, которая есть у цели", "cost": 5000, "chance": 0.5},
+	"incite": {"name": "Подстрекательство", "desc": "−15 одобрения у цели", "cost": 2500, "chance": 0.65},
+	"assassinate": {"name": "Устранение министра", "desc": "Цель теряет случайного министра", "cost": 4000, "chance": 0.5},
+	"arson": {"name": "Поджог", "desc": "Цель теряет случайную постройку", "cost": 3500, "chance": 0.55},
+	"bribe": {"name": "Подкуп генералов", "desc": "Цель отзывает атаку на вас", "cost": 4500, "chance": 0.6},
+}
+const SPY_OP_ORDER := ["sabotage", "steal_tech", "incite", "assassinate", "arson", "bribe"]
+const SPY_COOLDOWN_TICKS := 200
+const SPY_FAIL_RELATION := 15.0
+const SPY_MINISTER_BONUS := 0.15         # your spy chief adds this to the chance, theirs subtracts 0.2
+const SPY_COUNTER_MALUS := 0.2
 
 
 static func terrain_mult(terrain: int) -> float:

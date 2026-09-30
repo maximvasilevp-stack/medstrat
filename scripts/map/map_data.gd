@@ -25,6 +25,7 @@ var land_total: int = 0
 var land_cells: PackedInt32Array    # indices of all playable land cells
 var coast_cells: PackedInt32Array   # indices of playable land cells touching the sea
 var terrain_texture: ImageTexture
+var resources: PackedByteArray      # strategic deposits, see scripts/sim/resources.gd
 
 
 func _init(dir: String = "res://assets/map/") -> void:
@@ -52,6 +53,7 @@ func _init(dir: String = "res://assets/map/") -> void:
 				coasts.append(i)
 	land_cells = cells
 	coast_cells = coasts
+	resources = preload("res://scripts/sim/resources.gd").place(self)
 
 
 func size() -> int:

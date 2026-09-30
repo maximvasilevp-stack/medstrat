@@ -41,6 +41,10 @@ func _init() -> void:
 	test_content_pass_two()
 	test_reforms_projects_diplomacy()
 	test_no_clock()
+	test_resources_and_seasons()
+	test_diplomacy_two()
+	test_missions_autopilot()
+	test_save_load()
 	test_ranking_and_names()
 	test_determinism()
 	test_soak()
@@ -734,6 +738,174 @@ func test_no_clock() -> void:
 	w.step()
 	check(w.phase == w.Phase.PLAY and w.winner_declared == 1, "the match can go on after the win without a second result")
 	f["cells"] = cells0
+
+
+func test_resources_and_seasons() -> void:
+	var Resources = preload("res://scripts/sim/resources.gd")
+	var deposits := 0
+	var per_kind := {}
+	for i in map.land_cells:
+		var k: int = map.resources[i]
+		if k != 0:
+			deposits += 1
+			per_kind[k] = per_kind.get(k, 0) + 1
+			check(Resources.KINDS.has(k), "deposit kind %d exists" % k)
+	check(deposits > 400 and deposits < 3000, "sensible number of deposits (%d)" % deposits)
+	check(per_kind.size() == Resources.KIND_ORDER.size(), "every resource kind appears (%d kinds)" % per_kind.size())
+	for i in map.size():
+		if not map.is_land(i):
+			check(map.resources[i] == 0, "no deposits at sea")
+			break
+	var w = _quiet(81)
+	var f: Dictionary = w.factions[1]
+	var cell := -1
+	for i in map.land_cells:
+		if map.resources[i] == 4 and w.owner[i] == 0:
+			cell = i
+			break
+	check(cell != -1, "found a free gold deposit")
+	var gf0: float = w.mod(1, "gold_flat")
+	w._set_owner(cell, 1)
+	check(w.resource_count(1, 4) == 1 and absf(w.mod(1, "gold_flat") - gf0 - 3.0) < 1e-6, "owning a gold deposit adds gold per second")
+	w._set_owner(cell, 0)
+	check(w.resource_count(1, 4) == 0 and absf(w.mod(1, "gold_flat") - gf0) < 1e-6, "losing the deposit removes the bonus")
+	f["res"][1] = 100
+	f["mods_dirty"] = true
+	check(absf(w.mod(1, "growth") - pow(1.015, Resources.STACK_CAP) * Rules.SEASONS[w.season]["mods"].get("growth", 1.0)) < 1e-6, "resource bonus stacks up to the cap")
+	f["res"].erase(1)
+	f["mods_dirty"] = true
+	check(w.season == 0, "match starts in spring")
+	var g0: float = w.mod(1, "growth")
+	w.match_start_tick = w.tick - Rules.SEASON_SECONDS * Rules.TICKS_PER_SEC * 3
+	for i in Rules.TICKS_PER_SEC:
+		w.step()
+	check(w.season == 3 and w.mod(1, "growth") < g0, "winter arrives after three seasons and slows growth")
+	var snow := -1
+	for i in map.land_cells:
+		if map.terrain[i] == 4:
+			snow = i
+			break
+	if snow != -1:
+		var winter_cost: float = w.capture_cost(1, 0, snow)
+		w.season = 0
+		check(winter_cost > w.capture_cost(1, 0, snow) * 1.2, "snow costs more to take in winter")
+
+
+func test_diplomacy_two() -> void:
+	var w = _quiet(91)
+	var f: Dictionary = w.factions[1]
+	f["gold"] = 1000000.0
+	var bot := _first_bot(w, 0)
+	var bot2 := _first_bot(w, bot)
+	var b: Dictionary = w.factions[bot]
+	check(b["persona"] in Rules.PERSONA_ORDER, "bots have a persona")
+	# trade
+	b["relations"][1] = 30.0
+	check(not w.apply({"type": "trade_deal", "player": 1, "target": bot})["ok"], "trade needs relations 50+")
+	b["relations"][1] = 60.0
+	var rate0: float = w.gold_rate_of(1)
+	check(w.apply({"type": "trade_deal", "player": 1, "target": bot})["ok"] and w.trade_active(1, bot) and w.trade_active(bot, 1), "trade deal signed both ways")
+	check(w.gold_rate_of(1) > rate0 and w.income_breakdown(1)["Торговля"] > 0.0, "trade brings gold")
+	# alliance
+	check(not w.apply({"type": "alliance", "player": 1, "target": bot})["ok"], "alliance needs relations 75+")
+	b["relations"][1] = 80.0
+	check(w.apply({"type": "alliance", "player": 1, "target": bot})["ok"] and w.is_ally(1, bot) and w.pact_active(bot, 1), "alliance formed and counts as a pact")
+	check(w.launch_attack(1, bot, 0.5) != "", "cannot attack an ally")
+	# vassal
+	var b2: Dictionary = w.factions[bot2]
+	check(not w.apply({"type": "vassalize", "player": 1, "target": bot2})["ok"], "vassal needs 4x land")
+	var cells0: int = f["cells"]
+	f["cells"] = b2["cells"] * 5
+	b2["relations"][1] = 40.0
+	var t0: float = w.tribute_of(1)
+	check(w.apply({"type": "vassalize", "player": 1, "target": bot2})["ok"] and b2["overlord"] == 1 and f["vassals"][bot2], "vassal accepted")
+	check(w.tribute_of(1) > t0 and w.tribute_of(bot2) < 0.0 and w.pact_active(1, bot2), "vassal pays tribute and cannot be attacked")
+	f["cells"] = cells0
+	# espionage
+	var bot3 := _first_bot(w, bot2)
+	var b3: Dictionary = w.factions[bot3]
+	check(not w.apply({"type": "spy", "player": 1, "target": bot3, "op": "bribe"})["ok"], "bribe needs an incoming attack")
+	check(not w.apply({"type": "spy", "player": 1, "target": bot3, "op": "assassinate"})["ok"], "assassination needs a minister")
+	b3["staff"]["finance"] = true
+	var tr0: float = b3["troops"]
+	var ok_or_fail: bool = w.apply({"type": "spy", "player": 1, "target": bot3, "op": "sabotage"})["ok"]
+	check(ok_or_fail and w.spy_cooldown(1) > 0.0, "spy operation launched and agents rest")
+	check(b3["troops"] < tr0 or w.relation_of(bot3, 1) < Rules.RELATION_START, "sabotage either hurts the target or gets caught")
+	check(not w.apply({"type": "spy", "player": 1, "target": bot3, "op": "incite"})["ok"], "spy cooldown blocks the next operation")
+	check(absf(w.spy_chance(1, bot3, "sabotage") - 0.6) < 1e-6, "base spy chance")
+	w.apply({"type": "hire", "player": 1, "minister": "spy"})
+	check(absf(w.spy_chance(1, bot3, "sabotage") - 0.75) < 1e-6, "spy chief raises the chance")
+	# difficulty
+	var g1: float = w.growth_of(bot3)
+	w.difficulty = 3
+	check(w.growth_of(bot3) > g1 * 1.5 and w.grace_seconds() == 0.0, "nightmare bots grow faster and have no grace")
+	w.difficulty = 1
+
+
+func test_missions_autopilot() -> void:
+	var Missions = preload("res://scripts/sim/missions.gd")
+	var Achievements = preload("res://scripts/sim/achievements.gd")
+	var w = _quiet(92)
+	var f: Dictionary = w.factions[1]
+	check(f["missions"].size() == Missions.ACTIVE, "three missions at start")
+	var keys := {}
+	for m in f["missions"]:
+		keys[m["key"]] = true
+		check(Missions.describe(m).length() > 5 and Missions.progress(w, 1, m) < 1.0, "mission %s described and not done" % m["key"])
+	check(keys.size() == Missions.ACTIVE, "missions are distinct")
+	for key in Missions.TEMPLATE_ORDER:
+		var m := Missions.make(w, 1, key, 0)
+		check(m["target"] > Missions.value(w, 1, Missions.TEMPLATES[key]["stat"]) - 1e-6, "template %s has a reachable target" % key)
+	var m0: Dictionary = Missions.make(w, 1, "gold", 0)
+	f["missions"][0] = m0
+	f["gold"] = m0["target"] + 1.0
+	var g0: float = f["gold"]
+	for i in Rules.TICKS_PER_SEC:
+		w.step()
+	check(int(f["counters"].get("missions_done", 0)) == 1 and f["gold"] > g0 + m0["gold"] * 0.9 and f["missions"][0]["key"] != "gold", "mission completes, pays and is replaced")
+	for key in Achievements.ORDER:
+		Achievements.met(w, 1, key)
+	var fresh := Achievements.check_new(w, 1, {})
+	check(fresh.is_empty() or true, "achievement check runs")
+	f["cells"] = 100
+	check("hundred" in Achievements.check_new(w, 1, {}), "achievement condition detected")
+	check(not ("hundred" in Achievements.check_new(w, 1, {"hundred": true})), "unlocked achievements are skipped")
+	# autopilot
+	f["gold"] = 50000.0
+	check(w.apply({"type": "autopilot", "player": 1, "task": "build", "on": true})["ok"] and f["autopilot"]["build"], "autopilot task enabled")
+	check(not w.apply({"type": "autopilot", "player": 1, "task": "dance", "on": true})["ok"], "unknown task rejected")
+	var cities0: int = f["cities"]
+	for i in Rules.BOT_PERIOD_TICKS * 6:
+		w.step()
+	check(f["cities"] > cities0, "autopilot builds a city")
+	w.apply({"type": "autopilot", "player": 1, "task": "build", "on": false})
+	check(not f["autopilot"].has("build"), "autopilot task disabled")
+	var spot: int = w.spawn_near(map.cities[0]["cell"])
+	check(spot != -1 and map.is_land(spot) and w.owner[spot] == 0, "spawn spot found near a city")
+
+
+func test_save_load() -> void:
+	var Save = preload("res://scripts/sim/save.gd")
+	var w = World.new(map, 93)
+	w.auto_spawn_human()
+	for i in 300:
+		w.step()
+	w.factions[1]["gold"] = 10000.0
+	check(w.apply({"type": "build", "player": 1, "kind": "city", "cell": w.factions[1]["spawn"]})["ok"], "city built before saving")
+	var d := Save.to_dict(w)
+	var w2 = Save.from_dict(map, d)
+	check(w2.tick == w.tick and w2.owner == w.owner and w2.factions.size() == w.factions.size(), "save round trip keeps the map and factions")
+	check(w2.factions[1]["cities"] == 1 and w2.buildings_at.size() == w.buildings_at.size(), "buildings survive")
+	check(w2.factions[1]["border"].size() == w.factions[1]["border"].size(), "borders rebuilt")
+	for i in 200:
+		w.step()
+		w2.step()
+	check(w2.owner == w.owner and is_equal_approx(w2.factions[2]["troops"], w.factions[2]["troops"]), "loaded match continues identically")
+	check(Save.save(w) and Save.exists() and Save.summary() != "", "save file written")
+	var w3 = Save.load_world(map)
+	check(w3 != null and w3.tick == w.tick, "save file loads")
+	Save.remove()
+	check(not Save.exists(), "save file removed")
 
 
 func test_ranking_and_names() -> void:

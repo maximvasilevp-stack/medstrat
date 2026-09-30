@@ -5,6 +5,7 @@ const ThemeFactory := preload("res://scripts/ui/theme_factory.gd")
 
 signal mute_toggled
 signal admin_code(code: String)
+signal save_requested
 
 var sound_button: Button
 var code_edit: LineEdit
@@ -23,8 +24,8 @@ func _ready() -> void:
 	panel.set_anchors_and_offsets_preset(PRESET_CENTER)
 	panel.offset_left = -200
 	panel.offset_right = 200
-	panel.offset_top = -190
-	panel.offset_bottom = 190
+	panel.offset_top = -220
+	panel.offset_bottom = 220
 	add_child(panel)
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 10)
@@ -36,6 +37,9 @@ func _ready() -> void:
 	box.add_child(title)
 	_button(box, "Продолжить", close)
 	sound_button = _button(box, "Звук: вкл", func(): mute_toggled.emit())
+	_button(box, "Сохранить игру", func():
+		save_requested.emit()
+		close())
 	var code_row := HBoxContainer.new()
 	code_row.add_theme_constant_override("separation", 8)
 	box.add_child(code_row)

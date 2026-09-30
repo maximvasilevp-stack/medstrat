@@ -1,5 +1,5 @@
 extends Control
-## Match scene: wooden frame, the map in a SubViewport, HUD, labels, minimap, effects and sounds.
+## Match scene: wooden frame, the map in a SubViewport, HUD, labels, effects, sounds, profile and saves.
 ## Command line (after "--"): --screenshot=PATH  --run-ticks=N  --fast  --demo  --open-exit  --seed=N
 
 const MapData := preload("res://scripts/map/map_data.gd")
@@ -7,10 +7,15 @@ const World := preload("res://scripts/sim/world.gd")
 const MapView := preload("res://scripts/map/map_view.gd")
 const BuildingLayer := preload("res://scripts/map/building_layer.gd")
 const EffectsLayer := preload("res://scripts/map/effects_layer.gd")
+const ResourceLayer := preload("res://scripts/map/resource_layer.gd")
+const Resources := preload("res://scripts/sim/resources.gd")
 const WorldScene := preload("res://scripts/map/world_scene.gd")
 const GameCamera := preload("res://scripts/camera/game_camera.gd")
 const MapLabels := preload("res://scripts/ui/map_labels.gd")
-const Minimap := preload("res://scripts/ui/minimap.gd")
+const Save := preload("res://scripts/sim/save.gd")
+const Scenarios := preload("res://scripts/sim/scenarios.gd")
+const Achievements := preload("res://scripts/sim/achievements.gd")
+const Missions := preload("res://scripts/sim/missions.gd")
 const Rules := preload("res://scripts/sim/rules.gd")
 const Names := preload("res://scripts/sim/names.gd")
 const HudScene := preload("res://scenes/ui/hud.tscn")
@@ -24,7 +29,10 @@ var world_node
 var container: SubViewportContainer
 var hud
 var labels
-var minimap
+var loaded_from_save := false
+var _ach_timer := 0.0
+var _autosave_timer := 0.0
+var _result_counted := false
 var exit_dialog
 var human: int = 1
 var mode := ""
@@ -32,6 +40,7 @@ var speed := 1.0
 var _acc := 0.0
 var _last_cells := 0
 var hovered_cell := -1
+var season_tint: ColorRect
 var screenshot_path := ""
 var game_seed: int = int(Time.get_unix_time_from_system()) % 1000000
 
@@ -52,9 +61,17 @@ func _ready() -> void:
 	map = MapData.new()
 	var settings = _settings()
 	var nick: String = settings.nickname if settings != null else "Вы"
-	world = World.new(map, game_seed, nick)
+	if settings != null and settings.load_save and Save.exists():
+		settings.load_save = false
+		world = Save.load_world(map)
+		loaded_from_save = world != null
+	if world == null:
+		world = World.new(map, game_seed, nick)
+		if settings != null:
+			world.difficulty = clampi(settings.difficulty, 0, Rules.DIFFICULTIES.size() - 1)
+			world.scenario = settings.scenario
 	human = world.human
-	if settings != null:
+	if settings != null and not loaded_from_save:
 		var idx: int = clampi(settings.color_index, 0, Rules.PLAYER_COLORS.size() - 1)
 		world.factions[human]["color"] = Color(Rules.PLAYER_COLORS[idx])
 
@@ -86,8 +103,16 @@ func _ready() -> void:
 	world_node.add_child(sea)
 	view = MapView.new(map, world)
 	world_node.add_child(view)
+	world_node.add_child(ResourceLayer.new(map))
 	world_node.add_child(BuildingLayer.new(map, world))
 	world_node.add_child(EffectsLayer.new(map, world))
+	season_tint = ColorRect.new()
+	season_tint.color = Color(1, 1, 1, 0)
+	season_tint.position = Vector2(-4000, -4000)
+	season_tint.size = Vector2(8000 + map.width, 8000 + map.height)
+	season_tint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	season_tint.z_index = 2
+	world_node.add_child(season_tint)
 	camera = GameCamera.new()
 	camera.map_size = Vector2(map.width, map.height)
 	camera.zoom_index = 0
@@ -101,15 +126,6 @@ func _ready() -> void:
 	hud = HudScene.instantiate()
 	add_child(hud)
 	hud.setup(world)
-	minimap = Minimap.new()
-	minimap.setup(map, world, camera, container, view.mat)
-	minimap.visible = not (settings != null and settings.mobile)
-	minimap.set_anchors_and_offsets_preset(PRESET_BOTTOM_LEFT)
-	minimap.offset_left = 44
-	minimap.offset_right = 44 + minimap.custom_minimum_size.x
-	minimap.offset_top = -236 - minimap.custom_minimum_size.y
-	minimap.offset_bottom = -236
-	add_child(minimap)
 	exit_dialog = ExitDialogScene.instantiate()
 	add_child(exit_dialog)
 	exit_dialog.set_muted(settings != null and settings.muted)
@@ -119,7 +135,6 @@ func _ready() -> void:
 	world_node.cell_clicked.connect(_on_cell_clicked)
 	world_node.cell_hovered.connect(_on_cell_hovered)
 	camera.right_clicked.connect(func(_p): _set_mode(""))
-	minimap.focus_requested.connect(func(c): camera.focus_on(map.cell(c)))
 	hud.mode_selected.connect(_set_mode)
 	hud.attack_size_changed.connect(func(v): world.factions[human]["attack_size"] = v)
 	hud.cancel_attack.connect(func(t): world.apply({"type": "cancel", "player": human, "target": t}))
@@ -140,6 +155,34 @@ func _ready() -> void:
 	hud.gift.connect(func(t): world.apply({"type": "gift", "player": human, "target": t}))
 	hud.pact.connect(func(t): world.apply({"type": "pact", "player": human, "target": t}))
 	hud.continue_requested.connect(func(): world.resume())
+	hud.trade_deal.connect(func(t): world.apply({"type": "trade_deal", "player": human, "target": t}))
+	hud.alliance.connect(func(t): world.apply({"type": "alliance", "player": human, "target": t}))
+	hud.vassalize.connect(func(t): world.apply({"type": "vassalize", "player": human, "target": t}))
+	hud.spy.connect(func(t, op): world.apply({"type": "spy", "player": human, "target": t, "op": op}))
+	hud.autopilot_changed.connect(func(task, on): world.apply({"type": "autopilot", "player": human, "task": task, "on": on}))
+	hud.speed_changed.connect(func(s): speed = s)
+	exit_dialog.save_requested.connect(_save_game)
+	world.trade_signed.connect(func(fid, target):
+		if fid == human:
+			hud.toast("Торговый договор с %s на %d с" % [world.factions[target]["name"], Rules.TRADE_SECONDS], Color(0.75, 1, 0.75))
+			_sfx("build"))
+	world.alliance_formed.connect(func(fid, target):
+		if fid == human:
+			hud.toast("Союз с %s!" % world.factions[target]["name"], Color(0.75, 1, 0.75))
+			_sfx("win"))
+	world.vassal_gained.connect(func(fid, target):
+		if fid == human:
+			hud.toast("%s стал вашим вассалом и платит дань" % world.factions[target]["name"], Color(0.85, 0.75, 1))
+			_sfx("win"))
+	world.spy_result.connect(func(fid, _target, _op, success, text):
+		if fid == human:
+			hud.toast(text, Color(0.75, 1, 0.75) if success else Color(1, 0.6, 0.5))
+			_sfx("build" if success else "error")
+		elif _target == human:
+			hud.toast("Чужие агенты: %s" % text, Color(1, 0.7, 0.4))
+			_sfx("error", -4.0))
+	world.mission_done.connect(_on_mission_done)
+	world.news_posted.connect(func(text, kind): hud.news.push(text, kind))
 	world.bill_repealed.connect(func(fid, key):
 		if fid == human:
 			hud.toast("Закон отменён: %s" % Rules.BILLS[key]["name"], Color(1, 0.9, 0.7))
@@ -215,10 +258,26 @@ func _ready() -> void:
 		_sfx("win"))
 	world.faction_eliminated.connect(_on_faction_eliminated)
 	world.match_finished.connect(_on_match_finished)
+	world.season_changed.connect(_on_season_changed)
 	world.building_placed.connect(_on_building_placed)
 	hud.set_mode("")
+	var settings2 = _settings()
+	if settings2 != null:
+		hud.set_profile(_profile_text(), settings2.unlocked)
 	await get_tree().process_frame
 	camera.center_map()
+	if loaded_from_save:
+		for c in world.buildings_at:
+			world.building_placed.emit(world.buildings_at[c]["faction"], world.buildings_at[c]["kind"], c)
+		world.territory_changed.emit()
+		if world.phase != world.Phase.SPAWN:
+			camera.zoom_index = 2
+			camera._apply_zoom()
+			camera.focus_on(world.centroid(human))
+			hud.toast("Сохранённая игра загружена", Color(0.85, 0.95, 1))
+			_on_season_changed(world.season)
+	else:
+		_place_scenario_capital()
 	_handle_args()
 
 
@@ -239,6 +298,14 @@ func _process(delta: float) -> void:
 	_last_cells = cells
 	hud.refresh(delta)
 	_refresh_tooltip()
+	_ach_timer -= delta
+	if _ach_timer <= 0.0:
+		_ach_timer = 2.0
+		_check_achievements()
+	_autosave_timer += delta
+	if _autosave_timer >= 90.0 and world.phase == world.Phase.PLAY and world.factions[human]["alive"]:
+		_autosave_timer = 0.0
+		Save.save(world)
 
 
 # ------------------------------------------------------------------ input
@@ -308,6 +375,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.physical_keycode == KEY_M:
 			_toggle_mute()
 			get_viewport().set_input_as_handled()
+		elif event.physical_keycode == KEY_Q:
+			hud.toggle_missions()
+			get_viewport().set_input_as_handled()
+		elif event.physical_keycode == KEY_A:
+			hud.toggle_autopilot()
+			get_viewport().set_input_as_handled()
+		elif event.physical_keycode == KEY_SPACE:
+			hud.toggle_pause()
+			get_viewport().set_input_as_handled()
 
 
 func _on_cell_hovered(i: int) -> void:
@@ -335,12 +411,15 @@ func _refresh_tooltip() -> void:
 			text = "%s (вы)\n%s войск · %.2f%% земли" % [f["name"], Names.short_number(f["troops"]), world.land_share(human) * 100.0]
 		else:
 			var d: Dictionary = world.factions[o]
-			var kind: String = "город-государство" if d["kind"] == world.Kind.CITY else "игрок"
+			var kind: String = "город-государство" if d["kind"] == world.Kind.CITY else ("игрок · " + Rules.PERSONAS.get(d["persona"], Rules.PERSONAS["trader"])["name"])
 			text = "%s (%s)\n%s войск · %.2f%% земли" % [d["name"], kind, Names.short_number(d["troops"]), world.land_share(o) * 100.0]
 		if o != human and f["cells"] > 0:
 			text += "\nЗахват: ~%.1f войск за клетку" % world.capture_cost(human, o, i)
 		if world.scorched.has(i):
 			text += "\nВыжжено"
+		if map.resources[i] != 0:
+			var rk: int = map.resources[i]
+			text += "\n%s: %s" % [Resources.KINDS[rk]["name"], Resources.KINDS[rk]["desc"]]
 	hud.set_tooltip(text, get_global_mouse_position())
 
 
@@ -356,6 +435,10 @@ func _on_cell_clicked(i: int) -> void:
 		hud.toggle_people()
 	if hud.gov_panel.visible:
 		hud.toggle_gov()
+	if hud.missions_panel.visible:
+		hud.toggle_missions()
+	if hud.autopilot_panel.visible:
+		hud.toggle_autopilot()
 	if mode == "nuke" or mode == "mega":
 		var r: Dictionary = world.apply({"type": "nuke", "player": human, "cell": i, "mega": mode == "mega"})
 		if r["ok"]:
@@ -390,8 +473,118 @@ func _on_match_started() -> void:
 	camera.zoom_index = 2
 	camera._apply_zoom()
 	camera.focus_on(map.cell(spawn))
+	_apply_scenario()
 	hud.toast("Матч начался! Расширяйтесь, пока земля свободна", Color(0.8, 1, 0.8))
 	_sfx("start")
+
+
+## Flavour bonuses of the chosen historical start (once, right after the capital is placed).
+func _apply_scenario() -> void:
+	var sc := Scenarios.get_def(world.scenario)
+	if world.scenario == "free" or world.factions[human]["counters"].get("scenario_applied", 0) > 0:
+		return
+	var f: Dictionary = world.factions[human]
+	f["counters"]["scenario_applied"] = 1
+	f["troops"] *= float(sc["troops"])
+	f["gold"] += (float(sc["gold"]) - 1.0) * Rules.START_GOLD
+	if sc["tech"] != "":
+		f["tech"][sc["tech"]] = maxi(1, world.tech_level(human, sc["tech"]))
+	for b in sc["bills"]:
+		f["bills"][b] = true
+	f["mods_dirty"] = true
+	hud.toast("%s: %s" % [sc["name"], sc["desc"]], Color(0.85, 0.75, 1))
+
+
+## Historical start: the capital goes next to the scenario's city before the spawn phase ends.
+func _place_scenario_capital() -> void:
+	var sc := Scenarios.get_def(world.scenario)
+	if sc["city"] == "" or world.phase != world.Phase.SPAWN:
+		return
+	var city := Scenarios.city_cell(map, sc["city"])
+	if city == -1:
+		return
+	var spot: int = world.spawn_near(city)
+	if spot != -1:
+		world.apply({"type": "spawn", "player": human, "cell": spot})
+
+
+func _profile_text() -> String:
+	var settings = _settings()
+	if settings == null:
+		return ""
+	var n := 0
+	for k in settings.unlocked:
+		if settings.unlocked[k]:
+			n += 1
+	var lvl: int = settings.level()
+	return "%s · уровень %d · %s · %d XP (до следующего: %d) · достижений %d/%d" % [settings.nickname, lvl, settings.title(), settings.xp, settings.xp_for_level(lvl + 1) - settings.xp, n, Achievements.ORDER.size()]
+
+
+func _check_achievements() -> void:
+	var settings = _settings()
+	if settings == null or world.phase == world.Phase.SPAWN:
+		return
+	var fresh: Array = Achievements.check_new(world, human, settings.unlocked)
+	var mult: float = Rules.DIFFICULTIES[world.difficulty]["xp"]
+	for key in fresh:
+		settings.unlock(key)
+		var a: Dictionary = Achievements.LIST[key]
+		var gained: int = settings.add_xp(int(round(a["xp"] * mult)))
+		hud.toast("Достижение: %s (+%d XP)" % [a["name"], int(round(a["xp"] * mult))], Color(1, 0.85, 0.35))
+		hud.news.push("Достижение: %s" % a["name"], "you")
+		_sfx("win")
+		if gained > 0:
+			hud.toast("Новый уровень %d: %s" % [settings.level(), settings.title()], Color(1, 0.85, 0.35))
+	if not fresh.is_empty():
+		settings.save()
+	hud.set_profile(_profile_text(), settings.unlocked)
+
+
+func _on_mission_done(fid: int, m: Dictionary) -> void:
+	if fid != human:
+		return
+	var settings = _settings()
+	var t: Dictionary = Missions.TEMPLATES[m["key"]]
+	var xp: int = int(m["xp"])
+	if settings != null:
+		xp = int(round(xp * Rules.DIFFICULTIES[world.difficulty]["xp"]))
+		var gained: int = settings.add_xp(xp)
+		settings.stats["missions"] = int(settings.stats.get("missions", 0)) + 1
+		settings.save()
+		if gained > 0:
+			hud.toast("Новый уровень %d: %s" % [settings.level(), settings.title()], Color(1, 0.85, 0.35))
+	hud.toast("Задание выполнено: %s (+%s золота, +%d XP)" % [t["name"], Names.short_number(m["gold"]), xp], Color(0.75, 1, 0.75))
+	hud.news.push("Задание выполнено: %s" % t["name"], "you")
+	_sfx("win")
+
+
+func _save_game() -> void:
+	if Save.save(world):
+		hud.toast("Игра сохранена. В главном меню появится кнопка «Продолжить»", Color(0.85, 0.95, 1))
+	else:
+		hud.toast("Не удалось сохранить", Color(1, 0.6, 0.5))
+
+
+## XP and statistics for the match result (counted once per match).
+func _count_result(won: bool) -> String:
+	var settings = _settings()
+	if settings == null or _result_counted:
+		return ""
+	_result_counted = true
+	var share: float = world.land_share(human)
+	var mult: float = Rules.DIFFICULTIES[world.difficulty]["xp"]
+	var xp: int = int(round((50.0 + share * 400.0 + (150.0 if won else 0.0)) * mult))
+	var gained: int = settings.add_xp(xp)
+	settings.stats["matches"] = int(settings.stats.get("matches", 0)) + 1
+	if won:
+		settings.stats["wins"] = int(settings.stats.get("wins", 0)) + 1
+	settings.stats["best_share"] = maxf(float(settings.stats.get("best_share", 0.0)), share)
+	settings.save()
+	Save.remove()
+	var text := "+%d XP" % xp
+	if gained > 0:
+		text += " · новый уровень %d: %s" % [settings.level(), settings.title()]
+	return text
 
 
 func _on_action_rejected(a: Dictionary, reason: String) -> void:
@@ -438,8 +631,6 @@ func _on_election(fid: int, won: bool, approval: float) -> void:
 		else:
 			hud.toast("Выборы проиграны: минуту штраф к росту и золоту. Поднимайте одобрение!", Color(1, 0.55, 0.45))
 			_sfx("lose")
-	elif not won and world.factions[fid]["kind"] == world.Kind.BOT and world.factions[fid]["cells"] > 1000:
-		hud.toast("%s проигрывает выборы" % world.factions[fid]["name"], Color(0.9, 0.9, 0.9))
 
 
 func _on_tech_researched(fid: int, key: String, level: int) -> void:
@@ -459,12 +650,19 @@ func _on_building_placed(fid: int, kind: String, _cell: int) -> void:
 func _on_faction_eliminated(fid: int, by: int) -> void:
 	if fid == human:
 		_sfx("lose")
-		hud.show_result("Поражение", "Ваши земли захватил %s\nМесто: #%d из %d" % [world.factions[by]["name"], world.rank_of(human), world.ranking().size()], true)
+		var bonus := _count_result(false)
+		hud.show_result("Поражение", "Ваши земли захватил %s\nМесто: #%d из %d\n%s" % [world.factions[by]["name"], world.rank_of(human), world.ranking().size(), bonus], true)
 	elif by == human:
 		hud.toast("Уничтожено: %s" % world.factions[fid]["name"], Color(0.75, 1, 0.75))
 		_sfx("build")
-	elif world.factions[fid]["kind"] != world.Kind.CITY:
-		hud.toast("%s выбывает" % world.factions[fid]["name"], Color(0.9, 0.9, 0.9))
+
+
+func _on_season_changed(s: int) -> void:
+	var d: Dictionary = Rules.SEASONS[s]
+	var tint := Color(d["tint"])
+	tint.a = 0.10 if s == 3 else 0.05
+	season_tint.color = tint
+	hud.toast("%s: %s" % [d["name"], d["desc"]], Color(d["tint"]).lightened(0.4))
 
 
 func _on_match_finished(winner: int) -> void:
@@ -477,7 +675,8 @@ func _on_match_finished(winner: int) -> void:
 	var title := "Победа!" if won else "Матч окончен"
 	var goal := "%s занял %d%% карты." % [world.factions[winner]["name"], int(Rules.WIN_LAND_SHARE * 100.0)]
 	_sfx("win" if won else "lose")
-	hud.show_result(title, goal + "\n" + "\n".join(lines) + "\n\nВаше место: #%d" % world.rank_of(human), true, "Продолжить завоевание" if won else "Играть дальше")
+	var bonus := _count_result(won)
+	hud.show_result(title, goal + "\n" + "\n".join(lines) + "\n\nВаше место: #%d\n%s" % [world.rank_of(human), bonus], true, "Продолжить завоевание" if won else "Играть дальше")
 
 
 # ------------------------------------------------------------------ command line helpers
@@ -496,7 +695,13 @@ func _handle_args() -> void:
 	var open_people := false
 	var open_event := false
 	var open_gov := -1
+	var open_missions := false
+	var open_autopilot := false
 	for a in OS.get_cmdline_user_args():
+		if a == "--open-missions":
+			open_missions = true
+		elif a == "--open-autopilot":
+			open_autopilot = true
 		if a.begins_with("--screenshot="):
 			screenshot_path = a.get_slice("=", 1)
 		elif a.begins_with("--run-ticks="):
@@ -529,6 +734,10 @@ func _handle_args() -> void:
 		hud.toggle_people()
 	if open_gov >= 0:
 		hud.toggle_gov(open_gov)
+	if open_missions:
+		hud.toggle_missions()
+	if open_autopilot:
+		hud.toggle_autopilot()
 	if open_event:
 		world.factions[human]["next_event"] = world.tick
 		world._offer_event()
