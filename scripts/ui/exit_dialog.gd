@@ -16,7 +16,7 @@ func _ready() -> void:
 	theme = ThemeFactory.make()
 	visible = false
 	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.5)
+	dim.color = Color(0.23, 0.16, 0.10, 0.45)
 	dim.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
 	add_child(dim)
 	var panel := PanelContainer.new()

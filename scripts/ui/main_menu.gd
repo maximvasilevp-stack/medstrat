@@ -25,7 +25,7 @@ func _ready() -> void:
 	bg.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
 	add_child(bg)
 	var dim := ColorRect.new()
-	dim.color = Color(0.03, 0.05, 0.10, 0.55)
+	dim.color = Color(1.0, 0.97, 0.94, 0.35)
 	dim.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
 	add_child(dim)
 
@@ -45,6 +45,7 @@ func _ready() -> void:
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 48)
 	box.add_child(title)
+	box.add_theme_constant_override("separation", 10)
 	var sub := Label.new()
 	sub.text = "Захвати Европу: расширяйся, строй, побеждай"
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -63,7 +64,9 @@ func _ready() -> void:
 	nick_edit.size_flags_horizontal = SIZE_EXPAND_FILL
 	nick_row.add_child(nick_edit)
 
-	_button(box, "Новая игра", _start)
+	var start := _button(box, "Новая игра", _start)
+	start.add_theme_stylebox_override("normal", ThemeFactory.pill(ThemeFactory.ORANGE, 8))
+	start.add_theme_stylebox_override("hover", ThemeFactory.pill(ThemeFactory.ORANGE.lightened(0.15), 8))
 	var net := _button(box, "Сетевая игра", Callable())
 	net.disabled = true
 	net.tooltip_text = "Появится на следующем этапе"
@@ -103,10 +106,14 @@ func _ready() -> void:
 	var hint := Label.new()
 	hint.text = "ЛКМ — атака · ПКМ/СКМ или WASD — двигать карту · колесо / щипок / +− — зум · 1–8 — карточки · T — развитие · F11 — окно/экран · Esc — меню"
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint.set_anchors_and_offsets_preset(PRESET_BOTTOM_WIDE)
-	hint.offset_top = -40
-	hint.offset_bottom = -12
-	add_child(hint)
+	hint.add_theme_stylebox_override("normal", ThemeFactory.pill(ThemeFactory.PANEL, 6, 12))
+	var hint_box := CenterContainer.new()
+	hint_box.set_anchors_and_offsets_preset(PRESET_BOTTOM_WIDE)
+	hint_box.offset_top = -48
+	hint_box.offset_bottom = -12
+	hint_box.mouse_filter = MOUSE_FILTER_IGNORE
+	add_child(hint_box)
+	hint_box.add_child(hint)
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--screenshot="):
 			_screenshot(a.get_slice("=", 1))

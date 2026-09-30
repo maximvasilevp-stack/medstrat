@@ -23,14 +23,14 @@ signal continue_requested
 signal restart_requested
 
 const CARDS := [
-	["defense", "ЗАЩИТА", PixelSprites.TOWER, "1", Color(0.35, 0.60, 0.92)],
-	["city", "ГОРОД", PixelSprites.CITY, "2", Color(0.95, 0.75, 0.30)],
-	["port", "ПОРТ", PixelSprites.PORT, "3", Color(0.95, 0.75, 0.30)],
-	["market", "РЫНОК", PixelSprites.MARKET, "4", Color(0.95, 0.75, 0.30)],
-	["barracks", "КАЗАРМЫ", PixelSprites.BARRACKS, "5", Color(0.90, 0.40, 0.35)],
-	["bunker", "БУНКЕР", PixelSprites.BUNKER, "6", Color(0.35, 0.60, 0.92)],
-	["nuke", "ЯД. БОМБА", PixelSprites.ROCKET, "7", Color(1.0, 0.55, 0.20)],
-	["mega", "MEGA NUKE", PixelSprites.ROCKET, "8", Color(1.0, 0.55, 0.20)],
+	["defense", "ЗАЩИТА", PixelSprites.TOWER, "1", ThemeFactory.SKY],
+	["city", "ГОРОД", PixelSprites.CITY, "2", ThemeFactory.LEMON],
+	["port", "ПОРТ", PixelSprites.PORT, "3", ThemeFactory.LEMON],
+	["market", "РЫНОК", PixelSprites.MARKET, "4", ThemeFactory.LEMON],
+	["barracks", "КАЗАРМЫ", PixelSprites.BARRACKS, "5", ThemeFactory.PEACH],
+	["bunker", "БУНКЕР", PixelSprites.BUNKER, "6", ThemeFactory.BLUE],
+	["nuke", "ЯД. БОМБА", PixelSprites.ROCKET, "7", ThemeFactory.LAVENDER],
+	["mega", "MEGA NUKE", PixelSprites.ROCKET, "8", ThemeFactory.LAVENDER],
 ]
 const CARD_SIZE := Vector2(92, 86)
 
@@ -128,11 +128,11 @@ static func _bar(fill: Color, height: int) -> ProgressBar:
 	b.max_value = 1.0
 	b.custom_minimum_size = Vector2(0, height)
 	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(0.08, 0.06, 0.05)
-	bg.set_corner_radius_all(0)
+	bg.bg_color = ThemeFactory.FRAME
+	bg.set_corner_radius_all(height)
 	var fg := StyleBoxFlat.new()
 	fg.bg_color = fill
-	fg.set_corner_radius_all(0)
+	fg.set_corner_radius_all(height)
 	b.add_theme_stylebox_override("background", bg)
 	b.add_theme_stylebox_override("fill", fg)
 	b.mouse_filter = MOUSE_FILTER_IGNORE
@@ -162,7 +162,7 @@ func _build_top() -> void:
 	menu_button.pressed.connect(func(): exit_pressed.emit())
 	row.add_child(menu_button)
 
-	timer_bar = _bar(Color(0.36, 0.78, 0.36), 12)
+	timer_bar = _bar(ThemeFactory.LIME.darkened(0.15), 12)
 	timer_bar.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
 	timer_bar.offset_left = -260
 	timer_bar.offset_right = 260
@@ -176,6 +176,7 @@ func _build_top() -> void:
 	timer_label.offset_top = 28
 	timer_label.offset_bottom = 46
 	timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	timer_label.add_theme_stylebox_override("normal", ThemeFactory.pill(ThemeFactory.PANEL, 2, 8))
 	add_child(timer_label)
 
 
@@ -236,18 +237,14 @@ func _build_cards() -> void:
 		b.button_group = card_group
 		b.custom_minimum_size = CARD_SIZE
 		b.toggled.connect(_on_card_toggled.bind(kind))
-		var stripe := ColorRect.new()
-		stripe.color = d[4]
-		stripe.set_anchors_and_offsets_preset(PRESET_TOP_WIDE)
-		stripe.offset_left = 2
-		stripe.offset_right = -2
-		stripe.offset_top = 2
-		stripe.offset_bottom = 5
-		stripe.mouse_filter = MOUSE_FILTER_IGNORE
-		b.add_child(stripe)
+		var tint: Color = d[4]
+		b.add_theme_stylebox_override("normal", ThemeFactory.pill(tint))
+		b.add_theme_stylebox_override("hover", ThemeFactory.pill(tint.lightened(0.15)))
+		b.add_theme_stylebox_override("pressed", ThemeFactory.pill(ThemeFactory.ORANGE))
+		b.add_theme_stylebox_override("disabled", ThemeFactory.pill(Color("#F3EDE6")))
 		var box := VBoxContainer.new()
 		box.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
-		box.offset_top = 6
+		box.offset_top = 4
 		box.alignment = BoxContainer.ALIGNMENT_CENTER
 		box.mouse_filter = MOUSE_FILTER_IGNORE
 		box.add_theme_constant_override("separation", 1)
@@ -256,11 +253,11 @@ func _build_cards() -> void:
 		var title := _label(d[1], 10)
 		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		box.add_child(title)
-		var cost := _label("", 12, Color(1.0, 0.45, 0.4))
+		var cost := _label("", 12, ThemeFactory.TEXT)
 		cost.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		box.add_child(cost)
 		var key := _label(d[3], 10, ThemeFactory.TEXT_DIM)
-		key.position = Vector2(6, 7)
+		key.position = Vector2(8, 5)
 		b.add_child(key)
 		bar.add_child(b)
 		cards[kind] = b
@@ -269,18 +266,12 @@ func _build_cards() -> void:
 	tech.custom_minimum_size = CARD_SIZE
 	tech.tooltip_text = "Клавиша T"
 	tech.pressed.connect(toggle_tech)
-	var tstripe := ColorRect.new()
-	tstripe.color = Color(0.70, 0.45, 0.95)
-	tstripe.set_anchors_and_offsets_preset(PRESET_TOP_WIDE)
-	tstripe.offset_left = 2
-	tstripe.offset_right = -2
-	tstripe.offset_top = 2
-	tstripe.offset_bottom = 5
-	tstripe.mouse_filter = MOUSE_FILTER_IGNORE
-	tech.add_child(tstripe)
+	tech.add_theme_stylebox_override("normal", ThemeFactory.pill(ThemeFactory.LIME))
+	tech.add_theme_stylebox_override("hover", ThemeFactory.pill(ThemeFactory.LIME.lightened(0.15)))
+	tech.add_theme_stylebox_override("pressed", ThemeFactory.pill(ThemeFactory.ORANGE))
 	var tbox := VBoxContainer.new()
 	tbox.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
-	tbox.offset_top = 6
+	tbox.offset_top = 4
 	tbox.alignment = BoxContainer.ALIGNMENT_CENTER
 	tbox.mouse_filter = MOUSE_FILTER_IGNORE
 	tech.add_child(tbox)
@@ -289,16 +280,21 @@ func _build_cards() -> void:
 	ttitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	tbox.add_child(ttitle)
 	var tkey := _label("T", 10, ThemeFactory.TEXT_DIM)
-	tkey.position = Vector2(6, 7)
+	tkey.position = Vector2(8, 5)
 	tech.add_child(tkey)
 	bar.add_child(tech)
 
+	var status_box := CenterContainer.new()
+	status_box.set_anchors_and_offsets_preset(PRESET_BOTTOM_WIDE)
+	status_box.offset_top = -244
+	status_box.offset_bottom = -216
+	status_box.mouse_filter = MOUSE_FILTER_IGNORE
+	add_child(status_box)
 	status_label = _label("", 13)
-	status_label.set_anchors_and_offsets_preset(PRESET_BOTTOM_WIDE)
-	status_label.offset_top = -238
-	status_label.offset_bottom = -216
+	status_label.add_theme_stylebox_override("normal", ThemeFactory.pill(ThemeFactory.LEMON, 6, 12))
 	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	add_child(status_label)
+	status_label.visible = false
+	status_box.add_child(status_label)
 
 
 func _build_resources() -> void:
@@ -331,9 +327,9 @@ func _build_resources() -> void:
 	army_cap = _label("/ 0", 12, ThemeFactory.TEXT_DIM)
 	army_cap.size_flags_vertical = SIZE_SHRINK_END
 	army_row.add_child(army_cap)
-	army_bar = _bar(Color(0.98, 0.33, 0.62), 8)
+	army_bar = _bar(Color("#F07AA8"), 8)
 	army.add_child(army_bar)
-	army_rate = _label("", 11, Color(0.55, 0.95, 0.55))
+	army_rate = _label("", 11, ThemeFactory.GREEN)
 	army.add_child(army_rate)
 
 	var gold := VBoxContainer.new()
@@ -348,9 +344,9 @@ func _build_resources() -> void:
 	gold_row.add_theme_constant_override("separation", 8)
 	gold.add_child(gold_row)
 	gold_row.add_child(_icon(PixelSprites.COIN, "coin", Vector2(26, 26)))
-	gold_value = _label("0", 24, Color(1.0, 0.85, 0.35))
+	gold_value = _label("0", 24, Color("#C97B00"))
 	gold_row.add_child(gold_value)
-	gold_rate = _label("", 11, Color(0.55, 0.95, 0.55))
+	gold_rate = _label("", 11, ThemeFactory.GREEN)
 	gold_rate.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	gold.add_child(gold_rate)
 
@@ -370,10 +366,10 @@ func _build_resources() -> void:
 	var people_title := _label("Народ", 10, ThemeFactory.TEXT_DIM)
 	people_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	people.add_child(people_title)
-	approval_value = _label("60%", 22, Color(0.6, 0.9, 0.6))
+	approval_value = _label("60%", 22, ThemeFactory.GREEN)
 	approval_value.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	people.add_child(approval_value)
-	approval_bar = _bar(Color(0.45, 0.8, 0.45), 6)
+	approval_bar = _bar(ThemeFactory.LIME.darkened(0.15), 6)
 	people.add_child(approval_bar)
 	election_label = _label("", 11, ThemeFactory.TEXT_DIM)
 	election_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -452,7 +448,7 @@ func _build_tech_panel() -> void:
 	var title := _label("РАЗВИТИЕ", 20)
 	title.size_flags_horizontal = SIZE_EXPAND_FILL
 	head.add_child(title)
-	tech_gold = _label("", 14, Color(1.0, 0.85, 0.35))
+	tech_gold = _label("", 14, Color("#C97B00"))
 	head.add_child(tech_gold)
 	var close := Button.new()
 	close.text = "✕"
@@ -514,7 +510,7 @@ func _build_people_panel() -> void:
 		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		box.add_child(l)
 		people_labels[key] = l
-	people_bar = _bar(Color(0.45, 0.8, 0.45), 10)
+	people_bar = _bar(ThemeFactory.LIME.darkened(0.15), 10)
 	box.add_child(people_bar)
 	var hint := _label("Одобрение тянется к цели: налоги и войны его снижают, рынки и города поднимают. Ниже 25% люди уходят с окраин. Раз в 3 минуты выборы: меньше 50% — поражение и штраф на минуту.", 11, ThemeFactory.TEXT_DIM)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -579,7 +575,7 @@ func _build_event_panel() -> void:
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 8)
 	event_panel.add_child(box)
-	event_title = _label("", 18, Color(1.0, 0.85, 0.35))
+	event_title = _label("", 18, Color("#C97B00"))
 	box.add_child(event_title)
 	event_text = _label("", 13)
 	event_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -683,15 +679,19 @@ func _build_tooltip() -> void:
 
 
 func _build_toast() -> void:
+	var toast_box := CenterContainer.new()
+	toast_box.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
+	toast_box.offset_top = 56
+	toast_box.offset_bottom = 96
+	toast_box.offset_left = -400
+	toast_box.offset_right = 400
+	toast_box.mouse_filter = MOUSE_FILTER_IGNORE
+	add_child(toast_box)
 	toast_label = _label("", 18)
-	toast_label.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
-	toast_label.offset_top = 56
-	toast_label.offset_bottom = 84
-	toast_label.offset_left = -400
-	toast_label.offset_right = 400
+	toast_label.add_theme_stylebox_override("normal", ThemeFactory.pill(ThemeFactory.PANEL, 8, 14))
 	toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	toast_label.modulate.a = 0.0
-	add_child(toast_label)
+	toast_box.add_child(toast_label)
 
 
 func _build_overlay() -> void:
@@ -700,7 +700,7 @@ func _build_overlay() -> void:
 	overlay.visible = false
 	add_child(overlay)
 	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.55)
+	dim.color = Color(0.23, 0.16, 0.10, 0.45)
 	dim.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
 	overlay.add_child(dim)
 	var panel := PanelContainer.new()
@@ -762,21 +762,26 @@ func set_mode(kind: String) -> void:
 	_syncing = false
 	match kind:
 		"city":
-			status_label.text = "Клик по своей земле: город поднимает лимит и рост армии. Esc — отмена"
+			set_status("Клик по своей земле: город поднимает лимит и рост армии. Esc — отмена")
 		"port":
-			status_label.text = "Клик по своему берегу: порт даёт золото и высадки с моря. Esc — отмена"
+			set_status("Клик по своему берегу: порт даёт золото и высадки с моря. Esc — отмена")
 		"defense":
-			status_label.text = "Клик по своей земле: защита удорожает захват ваших клеток. Esc — отмена"
+			set_status("Клик по своей земле: защита удорожает захват ваших клеток. Esc — отмена")
 		"market":
-			status_label.text = "Клик по своей земле: рынок приносит +12 золота в секунду. Esc — отмена"
+			set_status("Клик по своей земле: рынок приносит +12 золота в секунду. Esc — отмена")
 		"barracks":
-			status_label.text = "Клик по своей земле: казармы поднимают лимит и рост армии. Esc — отмена"
+			set_status("Клик по своей земле: казармы поднимают лимит и рост армии. Esc — отмена")
 		"bunker":
-			status_label.text = "Клик по своей земле: бункер сбивает чужие бомбы в радиусе 16 клеток. Esc — отмена"
+			set_status("Клик по своей земле: бункер сбивает чужие бомбы в радиусе 16 клеток. Esc — отмена")
 		"nuke", "mega":
-			status_label.text = "Клик по цели: через 3 секунды земля в радиусе станет ничьей и выжженной. Esc — отмена"
+			set_status("Клик по цели: через 3 секунды земля в радиусе станет ничьей и выжженной. Esc — отмена")
 		_:
-			status_label.text = ""
+			set_status("")
+
+
+func set_status(text: String) -> void:
+	status_label.text = text
+	status_label.visible = text != ""
 
 
 func set_tooltip(text: String, at: Vector2) -> void:
@@ -794,7 +799,18 @@ func set_tooltip(text: String, at: Vector2) -> void:
 
 func toast(text: String, color: Color = Color(1, 0.95, 0.8)) -> void:
 	toast_label.text = text
-	toast_label.add_theme_color_override("font_color", color)
+	# incoming colours are the old light-on-dark hints; map them to a pill colour and keep the text dark
+	var pill_color := ThemeFactory.PANEL
+	if color.r > 0.9 and color.g < 0.7:
+		pill_color = ThemeFactory.PEACH
+	elif color.g > 0.9 and color.r < 0.9:
+		pill_color = ThemeFactory.LIME
+	elif color.b > 0.9 and color.r < 0.9:
+		pill_color = ThemeFactory.SKY
+	elif color.r > 0.9 and color.g > 0.8 and color.b < 0.5:
+		pill_color = ThemeFactory.LEMON
+	toast_label.add_theme_stylebox_override("normal", ThemeFactory.pill(pill_color, 6, 12))
+	toast_label.add_theme_color_override("font_color", ThemeFactory.TEXT)
 	toast_label.modulate.a = 1.0
 	if toast_tween:
 		toast_tween.kill()
@@ -822,7 +838,7 @@ func refresh(delta: float) -> void:
 		var left := int(ceil(world.spawn_seconds_left()))
 		timer_bar.value = 0.0
 		timer_label.text = "До начала: %d с" % left
-		status_label.text = "Выберите точку старта: кликните по свободной земле (автостарт через %d с)" % left
+		set_status("Выберите точку старта: кликните по свободной земле (автостарт через %d с)" % left)
 	else:
 		var elapsed: float = world.seconds()
 		var remaining: int = maxi(0, int(Rules.MATCH_SECONDS - elapsed))
@@ -839,7 +855,7 @@ func refresh(delta: float) -> void:
 	gold_rate.text = "+%s / сек" % Names.short_number(world.gold_rate_of(human))
 	var approval: float = f["approval"]
 	approval_value.text = "%d%%" % int(approval)
-	var ac := Color(0.6, 0.9, 0.6) if approval >= 50.0 else (Color(1.0, 0.85, 0.35) if approval >= 25.0 else Color(1.0, 0.45, 0.4))
+	var ac := ThemeFactory.GREEN if approval >= 50.0 else (Color("#C97B00") if approval >= 25.0 else ThemeFactory.RED)
 	approval_value.add_theme_color_override("font_color", ac)
 	approval_bar.value = approval / 100.0
 	if not spawning:
@@ -857,7 +873,7 @@ func refresh(delta: float) -> void:
 			l.add_theme_color_override("font_color", ThemeFactory.TEXT_DIM)
 		else:
 			l.text = Names.short_number(cost)
-			l.add_theme_color_override("font_color", Color(1.0, 0.85, 0.35) if f["gold"] >= cost else Color(1.0, 0.45, 0.4))
+			l.add_theme_color_override("font_color", ThemeFactory.TEXT if f["gold"] >= cost else ThemeFactory.RED)
 	if tech_panel.visible and _attacks_timer <= 0.0:
 		_refresh_tech()
 	if people_panel.visible and _attacks_timer <= 0.0:
@@ -894,7 +910,7 @@ func _refresh_leaderboard() -> void:
 		r["name"].text = f["name"]
 		var share: float = world.land_share(f["id"]) * 100.0
 		r["share"].text = ("%.2f%%" if share < 1.0 else "%.1f%%") % share
-		var c: Color = Color(1, 0.8, 0.5) if f["id"] == human else ThemeFactory.TEXT
+		var c: Color = Color("#C97B00") if f["id"] == human else ThemeFactory.TEXT
 		r["name"].add_theme_color_override("font_color", c)
 		r["rank"].add_theme_color_override("font_color", c)
 
@@ -929,4 +945,4 @@ func _refresh_attacks() -> void:
 		var who: String = "ничья земля" if s["target"] == 0 else world.factions[s["target"]]["name"]
 		attacks_box.add_child(_label("⛵ %s · %s (%d с)" % [who, Names.short_number(s["troops"]), int(ceil(s["ticks_left"] * Rules.TICK_DT))], 12))
 	for a in incoming:
-		attacks_box.add_child(_label("← %s · %s" % [world.factions[a["attacker"]]["name"], Names.short_number(a["troops"])], 12, Color(1, 0.55, 0.45)))
+		attacks_box.add_child(_label("← %s · %s" % [world.factions[a["attacker"]]["name"], Names.short_number(a["troops"])], 12, ThemeFactory.RED))
