@@ -95,7 +95,7 @@ func _ready() -> void:
 	help_panel.add_child(help)
 
 	var hint := Label.new()
-	hint.text = "ЛКМ — атака · ПКМ/СКМ или WASD — двигать карту · колесо / щипок / +− — зум · 1–8 — карточки · T — развитие · Esc — меню"
+	hint.text = "ЛКМ — атака · ПКМ/СКМ или WASD — двигать карту · колесо / щипок / +− — зум · 1–8 — карточки · T — развитие · F11 — окно/экран · Esc — меню"
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.set_anchors_and_offsets_preset(PRESET_BOTTOM_WIDE)
 	hint.offset_top = -40

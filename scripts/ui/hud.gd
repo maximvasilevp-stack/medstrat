@@ -402,7 +402,7 @@ func _build_zoom_buttons() -> void:
 		b.text = d[0]
 		b.custom_minimum_size = Vector2(40, 38)
 		b.add_theme_font_size_override("font_size", 20)
-		b.tooltip_text = "Зум: колесо, щипок на трекпаде, клавиши + и −"
+		b.tooltip_text = "Зум: колесо, щипок на трекпаде, клавиши + и −, F11 — во весь экран"
 		var step: int = d[1]
 		b.pressed.connect(func(): zoom_requested.emit(step))
 		box.add_child(b)

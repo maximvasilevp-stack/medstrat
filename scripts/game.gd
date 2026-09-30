@@ -63,28 +63,11 @@ func _ready() -> void:
 	wood.material = wood_mat
 	add_child(wood)
 
-	var margin := MarginContainer.new()
-	margin.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 36)
-	margin.add_theme_constant_override("margin_right", 36)
-	margin.add_theme_constant_override("margin_top", 56)
-	margin.add_theme_constant_override("margin_bottom", 132)
-	margin.mouse_filter = MOUSE_FILTER_IGNORE
-	add_child(margin)
-	var frame := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.05, 0.04, 0.03)
-	sb.border_color = Color(0.62, 0.48, 0.30)
-	sb.set_border_width_all(3)
-	sb.set_corner_radius_all(3)
-	sb.set_content_margin_all(3)
-	frame.add_theme_stylebox_override("panel", sb)
-	margin.add_child(frame)
+	# the map fills the whole window; panels float on top of it
 	container = SubViewportContainer.new()
 	container.stretch = true
-	container.size_flags_horizontal = SIZE_EXPAND_FILL
-	container.size_flags_vertical = SIZE_EXPAND_FILL
-	frame.add_child(container)
+	container.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	add_child(container)
 	var vp := SubViewport.new()
 	vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	vp.canvas_item_default_texture_filter = Viewport.DEFAULT_CANVAS_ITEM_TEXTURE_FILTER_NEAREST
@@ -181,6 +164,46 @@ func _process(delta: float) -> void:
 
 # ------------------------------------------------------------------ input
 
+## Wheel and trackpad gestures are handled here, before the GUI, so zoom works wherever the pointer is.
+func _input(event: InputEvent) -> void:
+	if exit_dialog.visible:
+		return
+	var pos: Vector2 = container.get_local_mouse_position()
+	if event is InputEventMagnifyGesture:
+		camera.magnify(event.factor, pos)
+		get_viewport().set_input_as_handled()
+	elif event is InputEventPanGesture:
+		if event.ctrl_pressed or event.meta_pressed:
+			camera.magnify(1.0 - event.delta.y * 0.02, pos)
+		else:
+			camera.pan_by(event.delta * 2.0)
+		get_viewport().set_input_as_handled()
+	elif event is InputEventMouseButton and event.pressed and (event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN):
+		if camera.wheel_ready():
+			camera.zoom_at_screen(1 if event.button_index == MOUSE_BUTTON_WHEEL_UP else -1, pos)
+		get_viewport().set_input_as_handled()
+	elif event is InputEventKey and event.pressed and not event.echo:
+		var k: int = event.physical_keycode
+		if k == KEY_EQUAL or k == KEY_PLUS or k == KEY_KP_ADD or k == KEY_BRACKETRIGHT:
+			camera.zoom_step(1)
+			get_viewport().set_input_as_handled()
+		elif k == KEY_MINUS or k == KEY_KP_SUBTRACT or k == KEY_BRACKETLEFT:
+			camera.zoom_step(-1)
+			get_viewport().set_input_as_handled()
+		elif k == KEY_F11 or (k == KEY_F and event.ctrl_pressed):
+			_toggle_fullscreen()
+			get_viewport().set_input_as_handled()
+
+
+func _toggle_fullscreen() -> void:
+	var w := get_window()
+	if w.mode == Window.MODE_FULLSCREEN or w.mode == Window.MODE_EXCLUSIVE_FULLSCREEN:
+		w.mode = Window.MODE_WINDOWED
+		w.size = Vector2i(1280, 800)
+	else:
+		w.mode = Window.MODE_FULLSCREEN
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel"):
 		if mode != "":
@@ -275,7 +298,7 @@ func _toggle_mute() -> void:
 
 func _on_match_started() -> void:
 	var spawn: int = world.factions[human]["spawn"]
-	camera.zoom_index = 1
+	camera.zoom_index = 2
 	camera._apply_zoom()
 	camera.focus_on(map.cell(spawn))
 	hud.toast("Матч начался! Расширяйтесь, пока земля свободна", Color(0.8, 1, 0.8))

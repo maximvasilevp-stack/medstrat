@@ -131,6 +131,35 @@ func zoom_step(step: int) -> void:
 	_zoom_at(step, get_viewport_rect().size / 2.0)
 
 
+## Zoom around a point given in viewport pixels (called by the match scene for wheel and gestures).
+func zoom_at_screen(step: int, screen_pos: Vector2) -> void:
+	_zoom_at(step, screen_pos)
+
+
+## Accumulate a pinch factor; zooms once the factor crosses a threshold.
+func magnify(factor: float, screen_pos: Vector2) -> void:
+	_magnify *= factor
+	if _magnify >= 1.25:
+		_magnify = 1.0
+		_zoom_at(1, screen_pos)
+	elif _magnify <= 0.8:
+		_magnify = 1.0
+		_zoom_at(-1, screen_pos)
+
+
+## Pan by a screen-space delta (trackpad two-finger scroll).
+func pan_by(delta: Vector2) -> void:
+	position += delta / _z()
+	_clamp_and_snap()
+
+
+func wheel_ready() -> bool:
+	if _wheel_timer > 0.0:
+		return false
+	_wheel_timer = WHEEL_COOLDOWN
+	return true
+
+
 func _zoom_at(step: int, screen_pos: Vector2) -> void:
 	var old_z := _z()
 	zoom_index = clampi(zoom_index + step, 0, ZOOMS.size() - 1)
