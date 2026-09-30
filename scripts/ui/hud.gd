@@ -620,9 +620,9 @@ func _refresh_people() -> void:
 		("" if f["last_election"] == "" else " · последние: " + f["last_election"])]
 	var effects: Array = []
 	if world.tick < f["loss_until"]:
-		effects.append("поражение на выборах: −50% роста, −30% золота ещё %d с" % int((f["loss_until"] - world.tick) * Rules.TICK_DT))
+		effects.append("поражение на выборах: −50%% роста, −30%% золота ещё %d с" % int((f["loss_until"] - world.tick) * Rules.TICK_DT))
 	if world.tick < f["festival_until"]:
-		effects.append("праздник: +10% роста ещё %d с" % int((f["festival_until"] - world.tick) * Rules.TICK_DT))
+		effects.append("праздник: +10%% роста ещё %d с" % int((f["festival_until"] - world.tick) * Rules.TICK_DT))
 	people_labels["effects"].text = "Эффекты: " + (", ".join(effects) if not effects.is_empty() else "нет")
 	people_bar.value = approval / 100.0
 	_tax_syncing = true

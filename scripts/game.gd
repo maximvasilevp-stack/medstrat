@@ -483,6 +483,7 @@ func _run_demo() -> void:
 			break
 	if target != -1:
 		world.apply({"type": "attack", "player": human, "cell": target, "ratio": 0.5})
+	world.apply({"type": "decree", "player": human, "kind": "festival"})
 	for i in 200:
 		world.step()
 	# nuke the nearest city-state to show craters
