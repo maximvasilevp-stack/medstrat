@@ -6,6 +6,7 @@ const ThemeFactory := preload("res://scripts/ui/theme_factory.gd")
 const PixelSprites := preload("res://scripts/map/pixel_sprites.gd")
 const Names := preload("res://scripts/sim/names.gd")
 const Rules := preload("res://scripts/sim/rules.gd")
+const Charts := preload("res://scripts/ui/charts.gd")
 
 signal mode_selected(kind: String)      # "" = no placement / targeting mode
 signal research(tech: String)
@@ -14,6 +15,10 @@ signal zoom_requested(step: int)
 signal tax_changed(level: int)
 signal decree(kind: String)
 signal event_choice(choice: int)
+signal hire(minister: String)
+signal fire(minister: String)
+signal agitate(party: String)
+signal bill(key: String)
 signal exit_pressed
 signal attack_size_changed(ratio: float)
 signal cancel_attack(target: int)
@@ -75,6 +80,17 @@ var event_buttons: Array = []
 var approval_value: Label
 var approval_bar: ProgressBar
 var election_label: Label
+var gov_panel: PanelContainer
+var gov_tabs: Array = []
+var gov_pages: Array = []
+var gov_gold: Label
+var seats_chart
+var party_rows: Dictionary = {}
+var minister_rows: Dictionary = {}
+var bill_rows: Dictionary = {}
+var stat_charts: Dictionary = {}
+var income_chart
+var gov_tab_index := 0
 var _tax_syncing := false
 var overlay: Control
 var overlay_title: Label
@@ -98,6 +114,7 @@ func _ready() -> void:
 	_build_zoom_buttons()
 	_build_tech_panel()
 	_build_people_panel()
+	_build_gov_panel()
 	_build_event_panel()
 	_build_tooltip()
 	_build_toast()
@@ -283,6 +300,27 @@ func _build_cards() -> void:
 	tkey.position = Vector2(8, 5)
 	tech.add_child(tkey)
 	bar.add_child(tech)
+	var gov := Button.new()
+	gov.custom_minimum_size = CARD_SIZE
+	gov.tooltip_text = "Клавиша G: Госдума, министры, законы, графики"
+	gov.pressed.connect(func(): toggle_gov())
+	gov.add_theme_stylebox_override("normal", ThemeFactory.pill(ThemeFactory.SKY))
+	gov.add_theme_stylebox_override("hover", ThemeFactory.pill(ThemeFactory.SKY.lightened(0.15)))
+	gov.add_theme_stylebox_override("pressed", ThemeFactory.pill(ThemeFactory.ORANGE))
+	var gbox := VBoxContainer.new()
+	gbox.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	gbox.offset_top = 4
+	gbox.alignment = BoxContainer.ALIGNMENT_CENTER
+	gbox.mouse_filter = MOUSE_FILTER_IGNORE
+	gov.add_child(gbox)
+	gbox.add_child(_icon(PixelSprites.BARRACKS, "gov", Vector2(40, 28)))
+	var gtitle := _label("ПРАВИТ-ВО", 10)
+	gtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	gbox.add_child(gtitle)
+	var gkey := _label("G", 10, ThemeFactory.TEXT_DIM)
+	gkey.position = Vector2(8, 5)
+	gov.add_child(gkey)
+	bar.add_child(gov)
 
 	var status_box := CenterContainer.new()
 	status_box.set_anchors_and_offsets_preset(PRESET_BOTTOM_WIDE)
@@ -562,6 +600,235 @@ func _build_people_panel() -> void:
 		decree_buttons[kind] = b
 
 
+func _build_gov_panel() -> void:
+	gov_panel = PanelContainer.new()
+	gov_panel.set_anchors_and_offsets_preset(PRESET_CENTER)
+	gov_panel.offset_left = -390
+	gov_panel.offset_right = 390
+	gov_panel.offset_top = -285
+	gov_panel.offset_bottom = 285
+	gov_panel.visible = false
+	add_child(gov_panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 8)
+	gov_panel.add_child(box)
+	var head := HBoxContainer.new()
+	box.add_child(head)
+	var title := _label("ПРАВИТЕЛЬСТВО", 20)
+	title.size_flags_horizontal = SIZE_EXPAND_FILL
+	head.add_child(title)
+	gov_gold = _label("", 14, Color("#D9731F"))
+	head.add_child(gov_gold)
+	var close := Button.new()
+	close.text = "✕"
+	close.custom_minimum_size = Vector2(36, 32)
+	close.pressed.connect(toggle_gov)
+	head.add_child(close)
+	var tabs := HBoxContainer.new()
+	tabs.add_theme_constant_override("separation", 6)
+	box.add_child(tabs)
+	var group := ButtonGroup.new()
+	for i in 4:
+		var b := Button.new()
+		b.text = ["Госдума", "Министры", "Законы", "Графики"][i]
+		b.toggle_mode = true
+		b.button_group = group
+		b.size_flags_horizontal = SIZE_EXPAND_FILL
+		b.custom_minimum_size = Vector2(0, 36)
+		var idx := i
+		b.pressed.connect(func(): show_gov_tab(idx))
+		tabs.add_child(b)
+		gov_tabs.append(b)
+	for i in 4:
+		var page := VBoxContainer.new()
+		page.add_theme_constant_override("separation", 6)
+		page.visible = i == 0
+		box.add_child(page)
+		gov_pages.append(page)
+
+	# --- Duma
+	var duma: VBoxContainer = gov_pages[0]
+	seats_chart = Charts.BarChart.new()
+	seats_chart.custom_minimum_size = Vector2(0, 100)
+	duma.add_child(seats_chart)
+	duma.add_child(_label("Места распределяются на каждых выборах по тому, как вы правите. Правящая партия даёт бонус. Агитация добавляет партии голосов до следующих выборов.", 11, ThemeFactory.TEXT_DIM))
+	for party in Rules.PARTY_ORDER:
+		var p: Dictionary = Rules.PARTIES[party]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		duma.add_child(row)
+		var swatch := ColorRect.new()
+		swatch.color = Color(p["color"])
+		swatch.custom_minimum_size = Vector2(14, 14)
+		swatch.size_flags_vertical = SIZE_SHRINK_CENTER
+		swatch.mouse_filter = MOUSE_FILTER_IGNORE
+		row.add_child(swatch)
+		var text := VBoxContainer.new()
+		text.size_flags_horizontal = SIZE_EXPAND_FILL
+		text.add_theme_constant_override("separation", 0)
+		row.add_child(text)
+		var name := _label(p["name"], 14)
+		text.add_child(name)
+		text.add_child(_label("%s · за неё: %s" % [p["bonus"], p["who"]], 11, ThemeFactory.TEXT_DIM))
+		var seats := _label("", 14)
+		seats.custom_minimum_size = Vector2(70, 0)
+		seats.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		row.add_child(seats)
+		var b := Button.new()
+		b.text = "Агитация · " + Names.short_number(Rules.AGITATION_COST)
+		b.custom_minimum_size = Vector2(170, 34)
+		var key: String = party
+		b.pressed.connect(func(): agitate.emit(key))
+		row.add_child(b)
+		party_rows[party] = {"name": name, "seats": seats, "button": b}
+
+	# --- ministers
+	var staff: VBoxContainer = gov_pages[1]
+	staff.add_child(_label("Найм стоит золота один раз, зарплата списывается каждую секунду. Уволить можно в любой момент.", 11, ThemeFactory.TEXT_DIM))
+	for key in Rules.MINISTER_ORDER:
+		var m: Dictionary = Rules.MINISTERS[key]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		staff.add_child(row)
+		var text := VBoxContainer.new()
+		text.size_flags_horizontal = SIZE_EXPAND_FILL
+		text.add_theme_constant_override("separation", 0)
+		row.add_child(text)
+		text.add_child(_label(m["name"], 14))
+		text.add_child(_label("%s · найм %s · зарплата %d/с" % [m["desc"], Names.short_number(m["fee"]), int(m["salary"])], 11, ThemeFactory.TEXT_DIM))
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(170, 34)
+		var mk: String = key
+		b.pressed.connect(func():
+			if world.has_minister(human, mk):
+				fire.emit(mk)
+			else:
+				hire.emit(mk))
+		row.add_child(b)
+		minister_rows[key] = {"button": b}
+
+	# --- bills
+	var laws: VBoxContainer = gov_pages[2]
+	laws.add_child(_label("Закон проходит, если партии, которые его поддерживают, держат вместе не меньше %d мест. Взнос сгорает в любом случае." % Rules.BILL_MAJORITY, 11, ThemeFactory.TEXT_DIM))
+	for key in Rules.BILL_ORDER:
+		var bl: Dictionary = Rules.BILLS[key]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		laws.add_child(row)
+		var text := VBoxContainer.new()
+		text.size_flags_horizontal = SIZE_EXPAND_FILL
+		text.add_theme_constant_override("separation", 0)
+		row.add_child(text)
+		text.add_child(_label(bl["name"], 14))
+		var support_names: Array = []
+		for party in bl["support"]:
+			support_names.append(Rules.PARTIES[party]["name"])
+		var info := _label("%s · за: %s" % [bl["desc"], ", ".join(support_names)], 11, ThemeFactory.TEXT_DIM)
+		text.add_child(info)
+		var support := _label("", 13)
+		support.custom_minimum_size = Vector2(90, 0)
+		support.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		row.add_child(support)
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(170, 34)
+		var bk: String = key
+		b.pressed.connect(func(): bill.emit(bk))
+		row.add_child(b)
+		bill_rows[key] = {"button": b, "support": support}
+
+	# --- statistics
+	var stats: VBoxContainer = gov_pages[3]
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 8)
+	stats.add_child(grid)
+	for key in ["gold", "troops", "cells", "approval"]:
+		var c = Charts.LineChart.new()
+		c.custom_minimum_size = Vector2(370, 150)
+		grid.add_child(c)
+		stat_charts[key] = c
+	income_chart = Charts.BarChart.new()
+	income_chart.custom_minimum_size = Vector2(0, 130)
+	stats.add_child(income_chart)
+	show_gov_tab(0)
+
+
+func show_gov_tab(i: int) -> void:
+	gov_tab_index = i
+	for k in gov_pages.size():
+		gov_pages[k].visible = k == i
+		gov_tabs[k].button_pressed = k == i
+	if world != null:
+		_refresh_gov()
+
+
+func toggle_gov(tab: int = -1) -> void:
+	gov_panel.visible = not gov_panel.visible
+	if gov_panel.visible:
+		tech_panel.visible = false
+		people_panel.visible = false
+		if tab >= 0:
+			show_gov_tab(tab)
+		_refresh_gov()
+
+
+func _refresh_gov() -> void:
+	var f: Dictionary = world.factions[human]
+	gov_gold.text = "Золото: " + Names.short_number(f["gold"])
+	match gov_tab_index:
+		0:
+			var bars: Array = []
+			for party in Rules.PARTY_ORDER:
+				var p: Dictionary = Rules.PARTIES[party]
+				var n: int = int(f["seats"].get(party, 0))
+				bars.append({"value": float(n), "color": Color(p["color"]), "label": p["name"]})
+				var r: Dictionary = party_rows[party]
+				r["seats"].text = "%d мест" % n
+				r["name"].text = p["name"] + (" · правит" if f["ruling"] == party else "")
+				r["name"].add_theme_color_override("font_color", Color("#D9731F") if f["ruling"] == party else ThemeFactory.TEXT)
+				var ag: float = f["agitation"].get(party, 0.0)
+				r["button"].text = ("Агитация · " + Names.short_number(Rules.AGITATION_COST)) + (" (+%d)" % int(ag) if ag > 0.0 else "")
+				r["button"].disabled = f["gold"] < Rules.AGITATION_COST
+			seats_chart.set_data("Госдума: %d мест · следующие выборы через %d с" % [Rules.DUMA_SEATS, int(world.seconds_to_election(human))], bars, true)
+		1:
+			for key in minister_rows:
+				var b: Button = minister_rows[key]["button"]
+				if world.has_minister(human, key):
+					b.text = "Уволить"
+					b.disabled = false
+				else:
+					b.text = "Нанять · " + Names.short_number(Rules.MINISTERS[key]["fee"])
+					b.disabled = f["gold"] < Rules.MINISTERS[key]["fee"]
+		2:
+			for key in bill_rows:
+				var r: Dictionary = bill_rows[key]
+				var support: int = world.bill_support(human, key)
+				r["support"].text = "%d/%d мест" % [support, Rules.BILL_MAJORITY]
+				r["support"].add_theme_color_override("font_color", ThemeFactory.GREEN if support >= Rules.BILL_MAJORITY else ThemeFactory.RED)
+				var b: Button = r["button"]
+				if world.has_bill(human, key):
+					b.text = "Принят"
+					b.disabled = true
+				else:
+					b.text = "Внести · " + Names.short_number(Rules.BILLS[key]["cost"])
+					b.disabled = f["gold"] < Rules.BILLS[key]["cost"]
+		3:
+			var h: Dictionary = f["history"]
+			var titles := {"gold": "Золото", "troops": "Армия", "cells": "Земля (клетки)", "approval": "Одобрение, %"}
+			var colors := {"gold": Color("#D9731F"), "troops": ThemeFactory.PEACH.darkened(0.15), "cells": ThemeFactory.LIME.darkened(0.2), "approval": ThemeFactory.SKY.darkened(0.15)}
+			for key in stat_charts:
+				stat_charts[key].set_data(titles[key], [{"values": h[key], "color": colors[key], "label": "за матч, шаг 5 с"}])
+			var bars: Array = []
+			var breakdown: Dictionary = world.income_breakdown(human)
+			var palette := [ThemeFactory.LIME, ThemeFactory.LEMON, ThemeFactory.SKY, ThemeFactory.LAVENDER, ThemeFactory.PEACH]
+			var i := 0
+			for label in breakdown:
+				bars.append({"value": breakdown[label], "color": palette[i % palette.size()], "label": label})
+				i += 1
+			income_chart.set_data("Доход в секунду: +%s" % Names.short_number(world.gold_rate_of(human)), bars, false)
+
+
 func _build_event_panel() -> void:
 	event_panel = PanelContainer.new()
 	event_panel.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
@@ -593,6 +860,7 @@ func toggle_people() -> void:
 	people_panel.visible = not people_panel.visible
 	if people_panel.visible:
 		tech_panel.visible = false
+		gov_panel.visible = false
 		_refresh_people()
 
 
@@ -644,6 +912,8 @@ func _refresh_people() -> void:
 func toggle_tech() -> void:
 	tech_panel.visible = not tech_panel.visible
 	if tech_panel.visible:
+		people_panel.visible = false
+		gov_panel.visible = false
 		_refresh_tech()
 
 
@@ -878,6 +1148,8 @@ func refresh(delta: float) -> void:
 		_refresh_tech()
 	if people_panel.visible and _attacks_timer <= 0.0:
 		_refresh_people()
+	if gov_panel.visible and _lb_timer <= 0.0:
+		_refresh_gov()
 
 	_lb_timer -= delta
 	if _lb_timer <= 0.0:

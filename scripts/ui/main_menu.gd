@@ -2,6 +2,7 @@ extends Control
 ## Main menu: nickname, new game, how to play, sound toggle, quit.
 
 const ThemeFactory := preload("res://scripts/ui/theme_factory.gd")
+const Rules := preload("res://scripts/sim/rules.gd")
 
 var nick_edit: LineEdit
 var help_panel: PanelContainer
@@ -63,6 +64,30 @@ func _ready() -> void:
 	nick_edit.text = settings.nickname if settings != null else "Игрок"
 	nick_edit.size_flags_horizontal = SIZE_EXPAND_FILL
 	nick_row.add_child(nick_edit)
+	var color_row := HBoxContainer.new()
+	color_row.add_theme_constant_override("separation", 8)
+	box.add_child(color_row)
+	var color_label := Label.new()
+	color_label.text = "Ваш цвет:"
+	color_row.add_child(color_label)
+	var color_group := ButtonGroup.new()
+	for i in Rules.PLAYER_COLORS.size():
+		var c := Color(Rules.PLAYER_COLORS[i])
+		var b := Button.new()
+		b.toggle_mode = true
+		b.button_group = color_group
+		b.custom_minimum_size = Vector2(44, 34)
+		b.size_flags_horizontal = SIZE_EXPAND_FILL
+		b.add_theme_stylebox_override("normal", ThemeFactory.box(c, c.darkened(0.15), 4, 10))
+		b.add_theme_stylebox_override("hover", ThemeFactory.box(c.lightened(0.1), c.darkened(0.15), 4, 10))
+		b.add_theme_stylebox_override("pressed", ThemeFactory.box(c, ThemeFactory.TEXT, 4, 10))
+		b.button_pressed = settings != null and settings.color_index == i
+		var idx := i
+		b.pressed.connect(func():
+			if settings != null:
+				settings.color_index = idx
+				settings.save())
+		color_row.add_child(b)
 
 	var start := _button(box, "Новая игра", _start)
 	start.add_theme_stylebox_override("normal", ThemeFactory.pill(ThemeFactory.ORANGE, 8))

@@ -36,6 +36,7 @@ func _init() -> void:
 	test_tech_and_new_buildings()
 	test_admin()
 	test_politics()
+	test_government()
 	test_ranking_and_names()
 	test_determinism()
 	test_soak()
@@ -488,6 +489,56 @@ func test_politics() -> void:
 		w.step()
 	check(events["resolved"] == 2 and f["event"].is_empty(), "unanswered event resolves by itself")
 	check(not w.apply({"type": "event_choice", "player": 1, "choice": 0})["ok"], "no choice without an event")
+
+
+func test_government() -> void:
+	var w = _quiet(51)
+	var f: Dictionary = w.factions[1]
+	# parliament
+	var total := 0
+	for party in Rules.PARTY_ORDER:
+		total += int(f["seats"][party])
+	check(total == Rules.DUMA_SEATS and f["ruling"] != "", "duma has %d seats and a ruling party" % Rules.DUMA_SEATS)
+	f["gold"] = 100000.0
+	var before: int = int(f["seats"]["tech"])
+	for i in 4:
+		check(w.apply({"type": "agitate", "player": 1, "party": "tech"})["ok"], "agitation accepted")
+	w._update_duma(1)
+	check(int(f["seats"]["tech"]) > before, "agitation shifts seats (%d -> %d)" % [before, int(f["seats"]["tech"])])
+	check(f["agitation"].is_empty(), "agitation resets after the election")
+	check(not w.apply({"type": "agitate", "player": 1, "party": "pirates"})["ok"], "unknown party rejected")
+	# ministers
+	var rate0: float = w.gold_rate_of(1)
+	f["gold"] = 0.0
+	check(not w.apply({"type": "hire", "player": 1, "minister": "finance"})["ok"], "hiring needs gold")
+	f["gold"] = 100000.0
+	check(w.apply({"type": "hire", "player": 1, "minister": "finance"})["ok"] and w.has_minister(1, "finance"), "finance minister hired")
+	check(is_equal_approx(f["gold"], 100000.0 - Rules.MINISTERS["finance"]["fee"]), "hiring fee paid")
+	var rate1: float = w.gold_rate_of(1)
+	check(absf(rate1 - (rate0 * (1.0 + Rules.FINANCE_BONUS) - Rules.MINISTERS["finance"]["salary"])) < 0.01, "finance bonus minus salary")
+	check(not w.apply({"type": "hire", "player": 1, "minister": "finance"})["ok"], "cannot hire twice")
+	var tech0: int = w.tech_cost(1, "trade")
+	w.apply({"type": "hire", "player": 1, "minister": "scientist"})
+	check(w.tech_cost(1, "trade") < tech0, "scientist makes research cheaper")
+	check(w.apply({"type": "fire", "player": 1, "minister": "finance"})["ok"] and not w.has_minister(1, "finance"), "minister fired")
+	check(not w.apply({"type": "fire", "player": 1, "minister": "finance"})["ok"], "cannot fire twice")
+	# bills
+	f["seats"] = {"order": 60, "trade": 20, "people": 10, "tech": 10}
+	var results := {"passed": [], "failed": []}
+	w.bill_result.connect(func(fid, key, passed, _s): if fid == 1: (results["passed"] if passed else results["failed"]).append(key))
+	check(w.apply({"type": "bill", "player": 1, "bill": "emergency"})["ok"] and w.has_bill(1, "emergency"), "bill with majority passes")
+	check(w.apply({"type": "bill", "player": 1, "bill": "social"})["ok"] and not w.has_bill(1, "social"), "bill without majority fails but costs")
+	check(results["passed"] == ["emergency"] and results["failed"] == ["social"], "bill signals")
+	check(not w.apply({"type": "bill", "player": 1, "bill": "emergency"})["ok"], "a passed bill cannot be re-submitted")
+	var g_plain := Rules.growth_per_sec(f["troops"], f["cells"], f["cities"], 0.0)
+	check(w.growth_of(1) > g_plain * 1.1 or f["approval"] < 50.0, "emergency bill boosts growth")
+	# statistics
+	var n0: int = f["history"]["gold"].size()
+	for i in Rules.HISTORY_PERIOD_TICKS * 3:
+		w.step()
+	check(f["history"]["gold"].size() >= n0 + 3, "history samples accumulate")
+	var breakdown: Dictionary = w.income_breakdown(1)
+	check(breakdown.has("Зарплаты") and breakdown["Зарплаты"] <= 0.0, "income breakdown lists salaries")
 
 
 func test_ranking_and_names() -> void:

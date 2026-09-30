@@ -14,6 +14,9 @@ extends RefCounted
 ##   {type="tax",    player, level}                                0..3
 ##   {type="decree", player, kind: "propaganda"|"festival"|"mobilize"}
 ##   {type="event_choice", player, choice}                         answer the pending event
+##   {type="hire", player, minister} / {type="fire", player, minister}
+##   {type="agitate", player, party}                               campaign for a party until the election
+##   {type="bill", player, bill}                                   put a bill to the Duma
 ##   {type="admin",  player, code}                               cheat code: infinite resources
 
 const Rules := preload("res://scripts/sim/rules.gd")
@@ -39,6 +42,9 @@ signal event_offered(faction_id: int, event: Dictionary)
 signal event_resolved(faction_id: int, text: String)
 signal unrest(faction_id: int, cells_lost: int)
 signal decree_applied(faction_id: int, kind: String)
+signal duma_changed(faction_id: int, seats: Dictionary, ruling: String)
+signal bill_result(faction_id: int, bill: String, passed: bool, support: int)
+signal minister_changed(faction_id: int, minister: String, hired: bool)
 signal faction_eliminated(faction_id: int, by: int)
 signal action_rejected(action: Dictionary, reason: String)
 signal match_started
@@ -140,6 +146,9 @@ func _new_faction(name: String, color: Color, kind: int) -> Dictionary:
 		"approval": Rules.APPROVAL_START, "tax": 1, "next_election": 0, "elections_won": 0, "elections_lost": 0,
 		"loss_until": 0, "festival_until": 0, "propaganda_cd": 0, "festival_cd": 0, "mobilize_cd": 0,
 		"event": {}, "event_until": 0, "next_event": 0, "last_election": "",
+		"staff": {}, "seats": {}, "ruling": "", "agitation": {}, "bills": {},
+		"history": {"gold": PackedFloat32Array(), "troops": PackedFloat32Array(), "cells": PackedFloat32Array(),
+			"approval": PackedFloat32Array(), "income": PackedFloat32Array()},
 		"alive": true, "border": {}, "spawn": -1,
 		"attack_size": Rules.DEFAULT_ATTACK_SIZE,
 	}
@@ -224,6 +233,9 @@ func _start_match() -> void:
 		if f["kind"] != Kind.CITY:
 			f["next_election"] = tick + int(Rules.ELECTION_PERIOD * Rules.TICKS_PER_SEC)
 	factions[human]["next_event"] = tick + rng.randi_range(Rules.EVENT_MIN_TICKS, Rules.EVENT_MAX_TICKS)
+	for id in range(1, factions.size()):
+		if factions[id]["kind"] != Kind.CITY:
+			_update_duma(id)
 	dirty = true
 	match_started.emit()
 
@@ -315,19 +327,128 @@ func tech_level(fid: int, key: String) -> int:
 	return int(factions[fid]["tech"].get(key, 0))
 
 
+func has_minister(fid: int, key: String) -> bool:
+	return bool(factions[fid]["staff"].get(key, false))
+
+
+func has_bill(fid: int, key: String) -> bool:
+	return bool(factions[fid]["bills"].get(key, false))
+
+
+func salaries_of(fid: int) -> float:
+	var total := 0.0
+	for key in factions[fid]["staff"]:
+		if factions[fid]["staff"][key]:
+			total += Rules.MINISTERS[key]["salary"]
+	return total
+
+
+func tech_discount(fid: int) -> float:
+	var d := 1.0
+	if has_minister(fid, "scientist"):
+		d *= 1.0 - Rules.SCIENTIST_DISCOUNT
+	if factions[fid]["ruling"] == "tech":
+		d *= 1.0 - Rules.GOV_TECH_DISCOUNT
+	if has_bill(fid, "science"):
+		d *= 1.0 - Rules.BILL_SCIENCE_DISCOUNT
+	return d
+
+
 func tech_cost(fid: int, key: String) -> int:
 	var t: Dictionary = Rules.TECHS[key]
 	var level := tech_level(fid, key)
 	if level >= t["max"]:
 		return 0
-	return int(t["costs"][level])
+	return int(round(t["costs"][level] * tech_discount(fid)))
+
+
+## Parliament seats from the way the country is run, plus campaign money.
+func compute_seats(fid: int) -> Dictionary:
+	var f: Dictionary = factions[fid]
+	var w := {
+		"order": 20.0 + f["barracks"] * 5.0 + f["defense"] * 4.0 + attacks_of(fid).size() * 3.0 + f["nukes"] * 4.0,
+		"trade": 20.0 + f["markets"] * 5.0 + f["ports"] * 4.0 + f["tax"] * 5.0 + tech_level(fid, "trade") * 4.0,
+		"people": 20.0 + f["approval"] * 0.5 + (3 - f["tax"]) * 6.0,
+		"tech": 20.0 + f["cities"] * 2.0,
+	}
+	for key in Rules.TECH_ORDER:
+		w["tech"] += tech_level(fid, key) * 4.0
+	for party in f["agitation"]:
+		w[party] += f["agitation"][party]
+	var total := 0.0
+	for party in w:
+		total += w[party]
+	var seats := {}
+	var given := 0
+	var remainders: Array = []
+	for party in Rules.PARTY_ORDER:
+		var exact: float = w[party] / total * Rules.DUMA_SEATS
+		seats[party] = int(floor(exact))
+		given += seats[party]
+		remainders.append([exact - floor(exact), party])
+	remainders.sort_custom(func(a, b): return a[0] > b[0])
+	var i := 0
+	while given < Rules.DUMA_SEATS:
+		seats[remainders[i % remainders.size()][1]] += 1
+		given += 1
+		i += 1
+	return seats
+
+
+func _update_duma(fid: int) -> void:
+	var f: Dictionary = factions[fid]
+	f["seats"] = compute_seats(fid)
+	f["agitation"] = {}
+	var best := ""
+	var best_seats := -1
+	for party in Rules.PARTY_ORDER:
+		if f["seats"][party] > best_seats:
+			best_seats = f["seats"][party]
+			best = party
+	f["ruling"] = best
+	duma_changed.emit(fid, f["seats"], best)
+
+
+func bill_support(fid: int, key: String) -> int:
+	var seats: Dictionary = factions[fid]["seats"]
+	var support := 0
+	for party in Rules.BILLS[key]["support"]:
+		support += int(seats.get(party, 0))
+	return support
+
+
+func record_history(fid: int) -> void:
+	var f: Dictionary = factions[fid]
+	var h: Dictionary = f["history"]
+	var samples := {"gold": f["gold"], "troops": f["troops"], "cells": float(f["cells"]), "approval": f["approval"], "income": gold_rate_of(fid)}
+	for key in samples:
+		var arr: PackedFloat32Array = h[key]
+		arr.append(samples[key])
+		if arr.size() > Rules.HISTORY_MAX:
+			arr.remove_at(0)
+		h[key] = arr
+
+
+func income_breakdown(fid: int) -> Dictionary:
+	var f: Dictionary = factions[fid]
+	var mult := 1.0 + tech_level(fid, "trade") * Rules.TRADE_BONUS
+	return {
+		"Земля": (Rules.GOLD_BASE + f["cells"] * Rules.GOLD_PER_CELL) * mult,
+		"Налоги": f["cells"] * f["tax"] * Rules.TAX_GOLD_PER_CELL * mult,
+		"Порты": f["ports"] * Rules.PORT_GOLD * mult,
+		"Рынки": f["markets"] * Rules.MARKET_GOLD,
+		"Зарплаты": -salaries_of(fid),
+	}
 
 
 func max_troops_of(fid: int) -> float:
 	var f: Dictionary = factions[fid]
 	if f["kind"] == Kind.CITY:
 		return f["base_troops"] * Rules.CITY_STATE_MAX_MULT
-	return Rules.max_troops(f["cells"], f["cities"]) + f["barracks"] * Rules.BARRACKS_CAP
+	var cap: float = Rules.max_troops(f["cells"], f["cities"]) + f["barracks"] * Rules.BARRACKS_CAP
+	if has_bill(fid, "army_reform"):
+		cap *= 1.0 + Rules.BILL_ARMY_CAP
+	return cap
 
 
 func approval_factor(fid: int) -> float:
@@ -338,6 +459,10 @@ func approval_factor(fid: int) -> float:
 		m *= Rules.ELECTION_LOSS_GROWTH
 	if tick < f["festival_until"]:
 		m *= Rules.FESTIVAL_GROWTH
+	if f["ruling"] == "order":
+		m *= 1.0 + Rules.GOV_ORDER_GROWTH
+	if has_bill(fid, "emergency"):
+		m *= 1.0 + Rules.BILL_EMERGENCY_GROWTH
 	return m
 
 
@@ -361,7 +486,15 @@ func gold_rate_of(fid: int) -> float:
 	var rate: float = (base + taxes) * (1.0 + tech_level(fid, "trade") * Rules.TRADE_BONUS) + f["markets"] * Rules.MARKET_GOLD
 	if tick < f["loss_until"]:
 		rate *= Rules.ELECTION_LOSS_GOLD
-	return rate
+	if has_minister(fid, "finance"):
+		rate *= 1.0 + Rules.FINANCE_BONUS
+	if f["ruling"] == "trade":
+		rate *= 1.0 + Rules.GOV_TRADE_GOLD
+	if has_bill(fid, "free_trade"):
+		rate *= 1.0 + Rules.BILL_TRADE_GOLD
+	if has_bill(fid, "social"):
+		rate *= 1.0 + Rules.BILL_SOCIAL_GOLD
+	return rate - salaries_of(fid)
 
 
 func approval_target(fid: int) -> float:
@@ -369,6 +502,14 @@ func approval_target(fid: int) -> float:
 	var t: float = Rules.APPROVAL_BASE_TARGET - f["tax"] * Rules.TAX_APPROVAL
 	t += minf(Rules.BUILDING_APPROVAL_CAP, f["markets"] * Rules.MARKET_APPROVAL + f["cities"] * Rules.CITY_APPROVAL)
 	t -= minf(Rules.WAR_WEARINESS_CAP, attacks_of(fid).size() * Rules.WAR_WEARINESS)
+	if has_minister(fid, "propagandist"):
+		t += Rules.PROPAGANDIST_APPROVAL
+	if f["ruling"] == "people":
+		t += Rules.GOV_PEOPLE_APPROVAL
+	if has_bill(fid, "social"):
+		t += Rules.BILL_SOCIAL_APPROVAL
+	if has_bill(fid, "emergency"):
+		t += Rules.BILL_EMERGENCY_APPROVAL
 	return clampf(t, 0.0, 100.0)
 
 
@@ -529,6 +670,8 @@ func step() -> void:
 				BotBrain.think(self, id)
 	if tick % Rules.TICKS_PER_SEC == 0:
 		_politics_second()
+	if tick % Rules.HISTORY_PERIOD_TICKS == 0 and factions[human]["alive"]:
+		record_history(human)
 	if tick % 5 == 0:
 		_decay_scorch()
 	_update_heat()
@@ -549,7 +692,7 @@ func _grow() -> void:
 		if f["troops"] < cap:
 			f["troops"] = minf(cap, f["troops"] + growth_of(id) * Rules.TICK_DT)
 		if f["kind"] != Kind.CITY:
-			f["gold"] += gold_rate_of(id) * Rules.TICK_DT
+			f["gold"] = maxf(0.0, f["gold"] + gold_rate_of(id) * Rules.TICK_DT)
 		if f["admin"]:
 			f["gold"] = 999999999.0
 			f["troops"] = maxf(f["troops"], 1000000.0)
@@ -610,6 +753,7 @@ func _unrest(fid: int) -> void:
 func _hold_election(fid: int) -> void:
 	var f: Dictionary = factions[fid]
 	f["next_election"] = tick + int(Rules.ELECTION_PERIOD * Rules.TICKS_PER_SEC)
+	_update_duma(fid)
 	var won: bool = f["approval"] >= Rules.ELECTION_WIN_APPROVAL or f["admin"]
 	if won:
 		f["elections_won"] += 1
@@ -682,7 +826,7 @@ func _advance_attacks() -> void:
 		var queue: Array = a["queue"]
 		var queued: Dictionary = a["queued"]
 		var target_alive: bool = tgt == 0 or factions[tgt]["alive"]
-		var rate := int(Rules.attack_rate(a["troops"]) * (1.0 + tech_level(att, "tactics") * Rules.TACTICS_BONUS))
+		var rate := int(Rules.attack_rate(a["troops"]) * (1.0 + tech_level(att, "tactics") * Rules.TACTICS_BONUS) * (1.0 + Rules.GENERAL_BONUS if has_minister(att, "general") else 1.0))
 		var taken := 0
 		while taken < rate and a["head"] < queue.size() and a["troops"] > 0.0 and target_alive:
 			var head: int = a["head"]
@@ -1026,6 +1170,51 @@ func _apply(a: Dictionary) -> String:
 			if f["event"].is_empty():
 				return "Нет события"
 			_resolve_event(fid, int(a["choice"]))
+			return ""
+		"hire":
+			var key: String = a["minister"]
+			if not Rules.MINISTERS.has(key):
+				return "Нет такой должности"
+			if has_minister(fid, key):
+				return "Уже нанят"
+			var fee: int = Rules.MINISTERS[key]["fee"]
+			if f["gold"] < fee:
+				return "Не хватает золота (нужно %s)" % Names.short_number(fee)
+			f["gold"] -= fee
+			f["staff"][key] = true
+			minister_changed.emit(fid, key, true)
+			return ""
+		"fire":
+			var key: String = a["minister"]
+			if not has_minister(fid, key):
+				return "Такого сотрудника нет"
+			f["staff"][key] = false
+			minister_changed.emit(fid, key, false)
+			return ""
+		"agitate":
+			var party: String = a["party"]
+			if not Rules.PARTIES.has(party):
+				return "Нет такой партии"
+			if f["gold"] < Rules.AGITATION_COST:
+				return "Не хватает золота (нужно %s)" % Names.short_number(Rules.AGITATION_COST)
+			f["gold"] -= Rules.AGITATION_COST
+			f["agitation"][party] = f["agitation"].get(party, 0.0) + Rules.AGITATION_WEIGHT
+			return ""
+		"bill":
+			var key: String = a["bill"]
+			if not Rules.BILLS.has(key):
+				return "Нет такого закона"
+			if has_bill(fid, key):
+				return "Закон уже принят"
+			var cost: int = Rules.BILLS[key]["cost"]
+			if f["gold"] < cost:
+				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
+			f["gold"] -= cost
+			var support := bill_support(fid, key)
+			var passed: bool = support >= Rules.BILL_MAJORITY
+			if passed:
+				f["bills"][key] = true
+			bill_result.emit(fid, key, passed, support)
 			return ""
 		"research":
 			var key: String = a["tech"]

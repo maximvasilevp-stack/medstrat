@@ -54,6 +54,9 @@ func _ready() -> void:
 	var nick: String = settings.nickname if settings != null else "Вы"
 	world = World.new(map, game_seed, nick)
 	human = world.human
+	if settings != null:
+		var idx: int = clampi(settings.color_index, 0, Rules.PLAYER_COLORS.size() - 1)
+		world.factions[human]["color"] = Color(Rules.PLAYER_COLORS[idx])
 
 	var wood := ColorRect.new()
 	wood.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
@@ -124,6 +127,26 @@ func _ready() -> void:
 	hud.tax_changed.connect(func(level): world.apply({"type": "tax", "player": human, "level": level}))
 	hud.decree.connect(func(kind): world.apply({"type": "decree", "player": human, "kind": kind}))
 	hud.event_choice.connect(func(idx): world.apply({"type": "event_choice", "player": human, "choice": idx}))
+	hud.hire.connect(func(m): world.apply({"type": "hire", "player": human, "minister": m}))
+	hud.fire.connect(func(m): world.apply({"type": "fire", "player": human, "minister": m}))
+	hud.agitate.connect(func(p): world.apply({"type": "agitate", "player": human, "party": p}))
+	hud.bill.connect(func(b): world.apply({"type": "bill", "player": human, "bill": b}))
+	world.bill_result.connect(func(fid, key, passed, support):
+		if fid == human:
+			var name: String = Rules.BILLS[key]["name"]
+			if passed:
+				hud.toast("Закон принят: %s (%d мест за)" % [name, support], Color(0.75, 1, 0.75))
+				_sfx("win")
+			else:
+				hud.toast("Закон отклонён: %s (%d из %d мест)" % [name, support, Rules.BILL_MAJORITY], Color(1, 0.6, 0.5))
+				_sfx("error"))
+	world.minister_changed.connect(func(fid, key, hired):
+		if fid == human:
+			hud.toast(("Нанят: %s" if hired else "Уволен: %s") % Rules.MINISTERS[key]["name"], Color(0.85, 0.95, 1))
+			_sfx("build"))
+	world.duma_changed.connect(func(fid, _seats, ruling):
+		if fid == human and world.phase == world.Phase.PLAY:
+			hud.toast("Госдума: правит %s" % Rules.PARTIES[ruling]["name"], Color(0.85, 0.75, 1)))
 	hud.menu_requested.connect(func(): get_tree().change_scene_to_file("res://scenes/main_menu.tscn"))
 	hud.restart_requested.connect(func(): get_tree().reload_current_scene())
 	world.match_started.connect(_on_match_started)
@@ -245,6 +268,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.physical_keycode == KEY_P:
 			hud.toggle_people()
 			get_viewport().set_input_as_handled()
+		elif event.physical_keycode == KEY_G:
+			hud.toggle_gov()
+			get_viewport().set_input_as_handled()
 		elif event.physical_keycode == KEY_M:
 			_toggle_mute()
 			get_viewport().set_input_as_handled()
@@ -294,6 +320,8 @@ func _on_cell_clicked(i: int) -> void:
 		hud.toggle_tech()
 	if hud.people_panel.visible:
 		hud.toggle_people()
+	if hud.gov_panel.visible:
+		hud.toggle_gov()
 	if mode == "nuke" or mode == "mega":
 		var r: Dictionary = world.apply({"type": "nuke", "player": human, "cell": i, "mega": mode == "mega"})
 		if r["ok"]:
@@ -430,6 +458,7 @@ func _handle_args() -> void:
 	var open_tech := false
 	var open_people := false
 	var open_event := false
+	var open_gov := -1
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--screenshot="):
 			screenshot_path = a.get_slice("=", 1)
@@ -447,6 +476,8 @@ func _handle_args() -> void:
 			open_people = true
 		elif a == "--open-event":
 			open_event = true
+		elif a.begins_with("--open-gov="):
+			open_gov = int(a.get_slice("=", 1))
 	if run_ticks > 0 or demo:
 		world.auto_spawn_human()
 	if demo:
@@ -459,6 +490,8 @@ func _handle_args() -> void:
 		hud.toggle_tech()
 	if open_people:
 		hud.toggle_people()
+	if open_gov >= 0:
+		hud.toggle_gov(open_gov)
 	if open_event:
 		world.factions[human]["next_event"] = world.tick
 		world._offer_event()

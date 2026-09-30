@@ -23,6 +23,12 @@ static func think(world, fid: int) -> void:
 	elif f["approval"] > 75.0 and f["tax"] < 2:
 		world.apply({"type": "tax", "player": fid, "level": f["tax"] + 1})
 
+	# staff
+	if f["cells"] > 500 and not world.has_minister(fid, "finance") and f["gold"] >= Rules.MINISTERS["finance"]["fee"] * 3:
+		world.apply({"type": "hire", "player": fid, "minister": "finance"})
+	elif f["cells"] > 1500 and not world.has_minister(fid, "general") and f["gold"] >= Rules.MINISTERS["general"]["fee"] * 3:
+		world.apply({"type": "hire", "player": fid, "minister": "general"})
+
 	# buildings and research
 	var wants_bunker := false
 	for o in contacts:
@@ -98,6 +104,8 @@ static func think(world, fid: int) -> void:
 		var score: float = (1.0 + d["troops"] / maxf(1.0, float(d["cells"]))) * (1.0 + d["defense"] * Rules.DEFENSE_BONUS)
 		if d["kind"] == world.Kind.CITY:
 			score *= 0.8
+		if o == world.human and world.has_minister(o, "diplomat"):
+			score *= Rules.DIPLOMAT_RATIO
 		score *= 1.0 + world.rng.randf() * 0.2
 		if score < best_score:
 			best_score = score
