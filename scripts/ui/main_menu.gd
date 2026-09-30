@@ -30,12 +30,21 @@ func _ready() -> void:
 	dim.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
 	add_child(dim)
 
+	var mobile: bool = settings != null and settings.mobile
 	var panel := PanelContainer.new()
-	panel.set_anchors_and_offsets_preset(PRESET_CENTER)
-	panel.offset_left = -220
-	panel.offset_right = 220
-	panel.offset_top = -250
-	panel.offset_bottom = 250
+	if mobile:
+		panel.set_anchors_and_offsets_preset(PRESET_CENTER)
+		var half: float = minf(220.0, get_viewport_rect().size.x / 2.0 - 10.0)
+		panel.offset_left = -half
+		panel.offset_right = half
+		panel.offset_top = -250
+		panel.offset_bottom = 250
+	else:
+		panel.set_anchors_and_offsets_preset(PRESET_CENTER)
+		panel.offset_left = -220
+		panel.offset_right = 220
+		panel.offset_top = -250
+		panel.offset_bottom = 250
 	add_child(panel)
 	var box := VBoxContainer.new()
 	box.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -44,12 +53,13 @@ func _ready() -> void:
 	var title := Label.new()
 	title.text = "MEDSTRAT"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 48)
+	title.add_theme_font_size_override("font_size", 36 if mobile else 48)
 	box.add_child(title)
 	box.add_theme_constant_override("separation", 10)
 	var sub := Label.new()
 	sub.text = "Захвати Европу: расширяйся, строй, побеждай"
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(sub)
 
 	var nick_row := HBoxContainer.new()
@@ -115,6 +125,12 @@ func _ready() -> void:
 	help_panel.offset_bottom = 200
 	help_panel.visible = false
 	add_child(help_panel)
+	if mobile:
+		help_panel.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+		help_panel.offset_left = 8
+		help_panel.offset_right = -8
+		help_panel.offset_top = 8
+		help_panel.offset_bottom = -8
 	var help := Label.new()
 	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	help.text = ("КАК ИГРАТЬ\n\n" +
@@ -132,6 +148,9 @@ func _ready() -> void:
 	hint.text = "Тап или клик — атака · перетаскивание — карта · колесо / щипок / +− — зум · 1–8 — карточки · T развитие · G правительство · Esc меню"
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.add_theme_stylebox_override("normal", ThemeFactory.pill(ThemeFactory.PANEL, 6, 12))
+	if mobile:
+		hint.text = "Тап — атака · перетаскивание — карта · +/− зум"
+		hint.add_theme_font_size_override("font_size", 12)
 	var hint_box := CenterContainer.new()
 	hint_box.set_anchors_and_offsets_preset(PRESET_BOTTOM_WIDE)
 	hint_box.offset_top = -48
