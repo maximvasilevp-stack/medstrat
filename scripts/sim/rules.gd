@@ -3,7 +3,7 @@ extends RefCounted
 
 const TICKS_PER_SEC := 10
 const TICK_DT := 1.0 / TICKS_PER_SEC
-const MATCH_SECONDS := 900               # a match lasts 15 minutes, then the leaderboard decides
+const WIN_LAND_SHARE := 0.5              # no clock: the match ends when someone holds this share of the land (or stands alone)
 const SPAWN_SECONDS := 20                # time to pick a starting point before the human is placed automatically
 const HEAT_TICKS := 14                   # freshly captured cells glow for this many ticks
 
@@ -165,9 +165,29 @@ const BUDGET_COST_PER_CELL := Content.BUDGET_COST_PER_CELL
 const BUDGET_MAX := Content.BUDGET_MAX
 const EXTRA_DECREES := Content.EXTRA_DECREES
 const EXTRA_DECREE_ORDER := Content.EXTRA_DECREE_ORDER
+const REFORMS := Content.REFORMS
+const REFORM_ORDER := Content.REFORM_ORDER
+const REFORM_COST := Content.REFORM_COST
+const REFORM_APPROVAL_HIT := Content.REFORM_APPROVAL_HIT
+const PROJECTS := Content.PROJECTS
+const PROJECT_ORDER := Content.PROJECT_ORDER
+const PROJECT_MAX_ACTIVE := Content.PROJECT_MAX_ACTIVE
+const CATEGORIES := Content.CATEGORIES
+const CATEGORY_ORDER := Content.CATEGORY_ORDER
+const RELATION_START := Content.RELATION_START
+const RELATION_DRIFT := Content.RELATION_DRIFT
+const RELATION_ATTACK_HIT := Content.RELATION_ATTACK_HIT
+const RELATION_GIFT := Content.RELATION_GIFT
+const GIFT_COST := Content.GIFT_COST
+const GIFT_COST_PER_CELL := Content.GIFT_COST_PER_CELL
+const PACT_COST := Content.PACT_COST
+const PACT_COST_PER_CELL := Content.PACT_COST_PER_CELL
+const PACT_MIN_RELATION := Content.PACT_MIN_RELATION
+const PACT_SECONDS := Content.PACT_SECONDS
+const RELATION_ATTACK_SCALE := Content.RELATION_ATTACK_SCALE
 
 const HISTORY_PERIOD_TICKS := 50         # one statistics sample every 5 s
-const HISTORY_MAX := 180                 # 15 minutes of samples
+const HISTORY_MAX := 360                 # 30 minutes of samples
 
 const EVENTS := BASE_EVENTS + Content.EXTRA_EVENTS
 

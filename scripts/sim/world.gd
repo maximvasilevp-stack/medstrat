@@ -18,6 +18,11 @@ extends RefCounted
 ##   {type="agitate", player, party}                               campaign for a party until the election
 ##   {type="bill", player, bill}                                   put a bill to the Duma
 ##   {type="budget", player, item, level}                          budget allocation 0..3
+##   {type="repeal", player, bill}                                 cancel a passed bill (half price)
+##   {type="reform", player, axis, option}                         change the constitution on one axis
+##   {type="project", player, project}                             start a national project
+##   {type="gift", player, target}                                 send gold to a bot: relations up
+##   {type="pact", player, target}                                 non-aggression pact for PACT_SECONDS
 ##   {type="admin",  player, code}                               cheat code: infinite resources
 
 const Rules := preload("res://scripts/sim/rules.gd")
@@ -47,6 +52,12 @@ signal decree_applied(faction_id: int, kind: String)
 signal duma_changed(faction_id: int, seats: Dictionary, ruling: String)
 signal bill_result(faction_id: int, bill: String, passed: bool, support: int)
 signal minister_changed(faction_id: int, minister: String, hired: bool)
+signal bill_repealed(faction_id: int, bill: String)
+signal reform_changed(faction_id: int, axis: String, option: String)
+signal project_started(faction_id: int, project: String)
+signal project_done(faction_id: int, project: String)
+signal pact_signed(faction_id: int, target: int)
+signal gift_sent(faction_id: int, target: int, relation: float)
 signal faction_eliminated(faction_id: int, by: int)
 signal action_rejected(action: Dictionary, reason: String)
 signal match_started
@@ -72,6 +83,7 @@ var bots_enabled := true
 var dirty := false
 var heat_dirty := false
 var scorch_dirty := false
+var winner_declared: int = 0          # faction that already triggered match_finished (the match may go on)
 var _spawns: Array = []
 var _captured_now := PackedInt32Array()
 var _recent: Array = []               # ring of PackedInt32Array, newest first
@@ -149,6 +161,7 @@ func _new_faction(name: String, color: Color, kind: int) -> Dictionary:
 		"loss_until": 0, "festival_until": 0, "propaganda_cd": 0, "festival_cd": 0, "mobilize_cd": 0,
 		"event": {}, "event_until": 0, "next_event": 0, "last_election": "",
 		"staff": {}, "seats": {}, "ruling": "", "agitation": {}, "bills": {}, "extra": {}, "budget": {},
+		"reforms": _default_reforms(), "projects": {}, "projects_done": {}, "relations": {}, "pacts": {},
 		"mods": {}, "mods_dirty": true,
 		"history": {"gold": PackedFloat32Array(), "troops": PackedFloat32Array(), "cells": PackedFloat32Array(),
 			"approval": PackedFloat32Array(), "income": PackedFloat32Array()},
@@ -157,6 +170,13 @@ func _new_faction(name: String, color: Color, kind: int) -> Dictionary:
 	}
 	factions.append(f)
 	return f
+
+
+static func _default_reforms() -> Dictionary:
+	var r := {}
+	for axis in Rules.REFORM_ORDER:
+		r[axis] = Rules.REFORMS[axis]["default"]
+	return r
 
 
 func _blob_ok(center: int, radius: int, min_distance: float) -> bool:
@@ -360,6 +380,13 @@ func mods_of(fid: int) -> Dictionary:
 		var level: int = f["budget"][key]
 		if level > 0:
 			Content.merge_mods(m, Rules.BUDGET[key]["mods"], level)
+	for axis in f["reforms"]:
+		var opt: String = f["reforms"][axis]
+		if Rules.REFORMS.has(axis) and Rules.REFORMS[axis]["options"].has(opt):
+			Content.merge_mods(m, Rules.REFORMS[axis]["options"][opt]["mods"])
+	for key in f["projects_done"]:
+		if f["projects_done"][key]:
+			Content.merge_mods(m, Rules.PROJECTS[key]["mods"])
 	f["mods"] = m
 	f["mods_dirty"] = false
 	return m
@@ -374,7 +401,7 @@ func budget_cost(fid: int) -> float:
 	var levels := 0
 	for key in f["budget"]:
 		levels += int(f["budget"][key])
-	return f["cells"] * Rules.BUDGET_COST_PER_CELL * levels
+	return f["cells"] * Rules.BUDGET_COST_PER_CELL * levels * mod(fid, "budget_cost")
 
 
 func has_minister(fid: int, key: String) -> bool:
@@ -386,7 +413,69 @@ func has_bill(fid: int, key: String) -> bool:
 
 
 func salaries_of(fid: int) -> float:
-	return mod(fid, "salary")
+	return mod(fid, "salary") * mod(fid, "salary_mult")
+
+
+func bill_cost(fid: int, key: String) -> int:
+	return int(round(Rules.BILLS[key]["cost"] * mod(fid, "bill_cost")))
+
+
+## Why a bill cannot be put to the vote right now ("" = it can).
+func bill_blocked(fid: int, key: String) -> String:
+	var bl: Dictionary = Rules.BILLS[key]
+	if bl.has("req") and not has_bill(fid, bl["req"]):
+		return "Сначала: %s" % Rules.BILLS[bl["req"]]["name"]
+	if bl.has("req_tech") and tech_level(fid, bl["req_tech"]) == 0:
+		return "Нужна технология: %s" % tech_def(bl["req_tech"])["name"]
+	for other in bl.get("excl", []):
+		if has_bill(fid, other):
+			return "Несовместим: %s" % Rules.BILLS[other]["name"]
+	return ""
+
+
+func reform_cost(fid: int) -> int:
+	return int(round(Rules.REFORM_COST * mod(fid, "bill_cost")))
+
+
+func project_progress(fid: int, key: String) -> float:
+	var f: Dictionary = factions[fid]
+	if f["projects_done"].get(key, false):
+		return 1.0
+	if not f["projects"].has(key):
+		return 0.0
+	return clampf(float(f["projects"][key]) / float(Rules.PROJECTS[key]["duration"]), 0.0, 1.0)
+
+
+func active_projects(fid: int) -> int:
+	return factions[fid]["projects"].size()
+
+
+## How faction a feels about faction b (0..100); the target's own charm ("relation" mod) counts.
+func relation_of(a: int, b: int) -> float:
+	var base: float = float(factions[a]["relations"].get(b, Rules.RELATION_START))
+	return clampf(base + mod(b, "relation"), 0.0, 100.0)
+
+
+func pact_active(a: int, b: int) -> bool:
+	return int(factions[a]["pacts"].get(b, 0)) > tick
+
+
+func pact_seconds_left(a: int, b: int) -> float:
+	return maxf(0.0, (int(factions[a]["pacts"].get(b, 0)) - tick) * Rules.TICK_DT)
+
+
+func gift_cost(fid: int, target: int) -> int:
+	return int(round((Rules.GIFT_COST + factions[target]["cells"] * Rules.GIFT_COST_PER_CELL) * mod(fid, "pact_cost")))
+
+
+func pact_cost(fid: int, target: int) -> int:
+	return int(round((Rules.PACT_COST + factions[target]["cells"] * Rules.PACT_COST_PER_CELL) * mod(fid, "pact_cost")))
+
+
+## Let the match go on after a winner was declared (the result screen offers it).
+func resume() -> void:
+	if phase == Phase.FINISHED:
+		phase = Phase.PLAY
 
 
 func tech_discount(fid: int) -> float:
@@ -412,17 +501,29 @@ func compute_seats(fid: int) -> Dictionary:
 	var f: Dictionary = factions[fid]
 	var extra: Dictionary = f["extra"]
 	var w := {
-		"order": 20.0 + f["barracks"] * 5.0 + f["defense"] * 4.0 + attacks_of(fid).size() * 3.0 + f["nukes"] * 4.0 + extra.get("fortress", 0) * 3.0 + extra.get("hq", 0) * 3.0,
-		"trade": 20.0 + f["markets"] * 5.0 + f["ports"] * 4.0 + f["tax"] * 5.0 + tech_level(fid, "trade") * 4.0 + extra.get("bank", 0) * 3.0 + extra.get("customs", 0) * 3.0 + extra.get("casino", 0) * 2.0,
-		"people": 20.0 + f["approval"] * 0.5 + (3 - f["tax"]) * 6.0 + extra.get("stadium", 0) * 3.0 + extra.get("temple", 0) * 2.0,
-		"tech": 20.0 + f["cities"] * 2.0 + extra.get("university", 0) * 4.0 + extra.get("lab", 0) * 4.0,
-		"green": 12.0 + extra.get("farm", 0) * 3.0 + extra.get("hospital", 0) * 3.0 + extra.get("granary", 0) * 2.0 + (8.0 if f["nukes"] == 0 else 0.0) + maxf(0.0, f["approval"] - 60.0) * 0.3,
-		"empire": 12.0 + f["cells"] / 400.0 + attacks_of(fid).size() * 4.0 + f["ports"] * 2.0 + extra.get("shipyard", 0) * 3.0 + extra.get("arsenal", 0) * 2.0,
+		"order": 20.0 + f["barracks"] * 5.0 + f["defense"] * 4.0 + attacks_of(fid).size() * 3.0 + f["nukes"] * 4.0,
+		"trade": 20.0 + f["markets"] * 5.0 + f["ports"] * 4.0 + f["tax"] * 5.0 + tech_level(fid, "trade") * 4.0,
+		"people": 20.0 + f["approval"] * 0.5 + (3 - f["tax"]) * 6.0,
+		"tech": 20.0 + f["cities"] * 2.0,
+		"green": 12.0 + (8.0 if f["nukes"] == 0 else 0.0) + maxf(0.0, f["approval"] - 60.0) * 0.3,
+		"empire": 12.0 + f["cells"] / 400.0 + attacks_of(fid).size() * 4.0 + f["ports"] * 2.0,
 	}
 	for key in Rules.TECH_ORDER:
 		w["tech"] += tech_level(fid, key) * 4.0
 	for key in Rules.EXTRA_TECH_ORDER:
 		w["tech"] += tech_level(fid, key) * 3.0
+	for key in extra:
+		var n: int = extra[key]
+		if n > 0 and Rules.BUILDINGS.has(key):
+			w[Rules.BUILDINGS[key]["party"]] += n * 3.0
+	for key in f["bills"]:
+		if f["bills"][key]:
+			for party in Rules.BILLS[key]["support"]:
+				w[party] += 1.5
+	for axis in f["reforms"]:
+		var opt: Dictionary = Rules.REFORMS[axis]["options"][f["reforms"][axis]]
+		for party in opt["parties"]:
+			w[party] += opt["parties"][party]
 	for party in f["agitation"]:
 		w[party] += f["agitation"][party]
 	var total := 0.0
@@ -719,9 +820,24 @@ func step() -> void:
 	if dirty:
 		dirty = false
 		territory_changed.emit()
-	if seconds() >= Rules.MATCH_SECONDS:
+	if tick % Rules.TICKS_PER_SEC == 0:
+		_check_victory()
+
+
+## The match has no clock: it ends when a player holds WIN_LAND_SHARE of the land or is the last one standing.
+func _check_victory() -> void:
+	if winner_declared != 0:
+		return
+	var lead := leader()
+	var alive := 0
+	for id in range(1, factions.size()):
+		var f: Dictionary = factions[id]
+		if f["kind"] != Kind.CITY and f["alive"]:
+			alive += 1
+	if land_share(lead) >= Rules.WIN_LAND_SHARE or (alive <= 1 and factions[lead]["alive"] and bots_enabled):
+		winner_declared = lead
 		phase = Phase.FINISHED
-		match_finished.emit(leader())
+		match_finished.emit(lead)
 
 
 func _grow() -> void:
@@ -767,11 +883,41 @@ func _politics_second() -> void:
 			_unrest(id)
 		if tick >= f["next_election"]:
 			_hold_election(id)
+		_advance_projects(id)
+		_drift_relations(id)
 	var h: Dictionary = factions[human]
 	if h["alive"] and h["event"].is_empty() and tick >= h["next_event"]:
 		_offer_event()
 	elif not h["event"].is_empty() and tick >= h["event_until"]:
 		_resolve_event(human, 0)
+
+
+func _advance_projects(fid: int) -> void:
+	var f: Dictionary = factions[fid]
+	if f["projects"].is_empty():
+		return
+	var speed: float = mod(fid, "project_speed")
+	var finished: Array = []
+	for key in f["projects"]:
+		f["projects"][key] = float(f["projects"][key]) + speed
+		if f["projects"][key] >= Rules.PROJECTS[key]["duration"]:
+			finished.append(key)
+	for key in finished:
+		f["projects"].erase(key)
+		f["projects_done"][key] = true
+		f["approval"] = clampf(f["approval"] + float(Rules.PROJECTS[key]["approval"]), 0.0, 100.0)
+		f["mods_dirty"] = true
+		project_done.emit(fid, key)
+
+
+func _drift_relations(fid: int) -> void:
+	var rel: Dictionary = factions[fid]["relations"]
+	for other in rel:
+		var v: float = rel[other]
+		if absf(v - Rules.RELATION_START) <= Rules.RELATION_DRIFT:
+			rel[other] = Rules.RELATION_START
+		else:
+			rel[other] = v + (Rules.RELATION_DRIFT if v < Rules.RELATION_START else -Rules.RELATION_DRIFT)
 
 
 func _unrest(fid: int) -> void:
@@ -1006,6 +1152,8 @@ func launch_attack(fid: int, target: int, ratio: float, cell: int = -1) -> Strin
 		return "Это ваша территория"
 	if target != 0 and not factions[target]["alive"]:
 		return "Этой фракции больше нет"
+	if target != 0 and pact_active(fid, target):
+		return "Пакт о ненападении с %s ещё %d с" % [factions[target]["name"], int(ceil(pact_seconds_left(fid, target)))]
 	var amount: float = f["troops"] * clampf(ratio, 0.01, 1.0)
 	if amount < Rules.ATTACK_MIN_TROOPS:
 		return "Слишком мало войск"
@@ -1034,12 +1182,22 @@ func launch_attack(fid: int, target: int, ratio: float, cell: int = -1) -> Strin
 			var ticks := maxi(5, int(dist / (Rules.SHIP_SPEED * nav)))
 			ships.append({"attacker": fid, "target": target, "troops": amount, "cell": cell, "from": from, "ticks_left": ticks, "total": ticks})
 			ship_launched.emit(fid, from, cell, ticks)
+			_relation_hit(target, fid)
 			return ""
 	if front.is_empty():
 		return "Нет общей границы"
 	f["troops"] -= amount
 	_add_attack(fid, target, amount, front)
+	_relation_hit(target, fid)
 	return ""
+
+
+## Being attacked sours the victim's attitude toward the attacker.
+func _relation_hit(victim: int, attacker: int) -> void:
+	if victim == 0:
+		return
+	var rel: Dictionary = factions[victim]["relations"]
+	rel[attacker] = maxf(0.0, float(rel.get(attacker, Rules.RELATION_START)) - Rules.RELATION_ATTACK_HIT)
 
 
 func cancel_attack(fid: int, target: int) -> String:
@@ -1276,7 +1434,10 @@ func _apply(a: Dictionary) -> String:
 				return "Нет такого закона"
 			if has_bill(fid, key):
 				return "Закон уже принят"
-			var cost: int = Rules.BILLS[key]["cost"]
+			var blocked := bill_blocked(fid, key)
+			if blocked != "":
+				return blocked
+			var cost: int = bill_cost(fid, key)
 			if f["gold"] < cost:
 				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
 			f["gold"] -= cost
@@ -1293,6 +1454,94 @@ func _apply(a: Dictionary) -> String:
 				return "Нет такой статьи бюджета"
 			f["budget"][item] = clampi(int(a["level"]), 0, Rules.BUDGET_MAX)
 			f["mods_dirty"] = true
+			return ""
+		"repeal":
+			var key: String = a["bill"]
+			if not Rules.BILLS.has(key) or not has_bill(fid, key):
+				return "Такой закон не действует"
+			for other in f["bills"]:
+				if f["bills"][other] and Rules.BILLS[other].get("req", "") == key:
+					return "Сначала отмените: %s" % Rules.BILLS[other]["name"]
+			@warning_ignore("integer_division")
+			var cost: int = bill_cost(fid, key) / 2
+			if f["gold"] < cost:
+				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
+			f["gold"] -= cost
+			f["bills"][key] = false
+			f["mods_dirty"] = true
+			bill_repealed.emit(fid, key)
+			return ""
+		"reform":
+			var axis: String = a["axis"]
+			var option: String = a["option"]
+			if not Rules.REFORMS.has(axis) or not Rules.REFORMS[axis]["options"].has(option):
+				return "Нет такой реформы"
+			if f["reforms"][axis] == option:
+				return "Уже действует"
+			var cost := reform_cost(fid)
+			if f["gold"] < cost:
+				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
+			f["gold"] -= cost
+			f["reforms"][axis] = option
+			f["approval"] = maxf(0.0, f["approval"] - Rules.REFORM_APPROVAL_HIT)
+			f["mods_dirty"] = true
+			reform_changed.emit(fid, axis, option)
+			return ""
+		"project":
+			var key: String = a["project"]
+			if not Rules.PROJECTS.has(key):
+				return "Нет такого проекта"
+			var p: Dictionary = Rules.PROJECTS[key]
+			if f["projects_done"].get(key, false):
+				return "Проект уже завершён"
+			if f["projects"].has(key):
+				return "Проект уже идёт"
+			if active_projects(fid) >= Rules.PROJECT_MAX_ACTIVE:
+				return "Одновременно не больше %d проектов" % Rules.PROJECT_MAX_ACTIVE
+			if p.has("req_tech") and tech_level(fid, p["req_tech"]) == 0:
+				return "Нужна технология: %s" % tech_def(p["req_tech"])["name"]
+			var cost: int = int(round(p["cost"] * mod(fid, "build_cost")))
+			if f["gold"] < cost:
+				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
+			f["gold"] -= cost
+			f["projects"][key] = 0.0
+			project_started.emit(fid, key)
+			return ""
+		"gift":
+			var target: int = int(a["target"])
+			if target <= 0 or target >= factions.size() or target == fid or factions[target]["kind"] == Kind.CITY:
+				return "Некому дарить"
+			if not factions[target]["alive"]:
+				return "Этой фракции больше нет"
+			var cost := gift_cost(fid, target)
+			if f["gold"] < cost:
+				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
+			f["gold"] -= cost
+			var rel: Dictionary = factions[target]["relations"]
+			rel[fid] = minf(100.0, float(rel.get(fid, Rules.RELATION_START)) + Rules.RELATION_GIFT)
+			gift_sent.emit(fid, target, relation_of(target, fid))
+			return ""
+		"pact":
+			var target: int = int(a["target"])
+			if target <= 0 or target >= factions.size() or target == fid or factions[target]["kind"] == Kind.CITY:
+				return "Не с кем заключать пакт"
+			if not factions[target]["alive"]:
+				return "Этой фракции больше нет"
+			if pact_active(fid, target):
+				return "Пакт уже действует (%d с)" % int(ceil(pact_seconds_left(fid, target)))
+			var rel := relation_of(target, fid)
+			if rel < Rules.PACT_MIN_RELATION:
+				return "%s отказывается: отношения %d (нужно %d), помогут подарки" % [factions[target]["name"], int(rel), int(Rules.PACT_MIN_RELATION)]
+			var cost := pact_cost(fid, target)
+			if f["gold"] < cost:
+				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
+			f["gold"] -= cost
+			var until: int = tick + Rules.PACT_SECONDS * Rules.TICKS_PER_SEC
+			f["pacts"][target] = until
+			factions[target]["pacts"][fid] = until
+			cancel_attack(fid, target)
+			cancel_attack(target, fid)
+			pact_signed.emit(fid, target)
 			return ""
 		"research":
 			var key: String = a["tech"]

@@ -38,6 +38,9 @@ func _init() -> void:
 	test_politics()
 	test_government()
 	test_content()
+	test_content_pass_two()
+	test_reforms_projects_diplomacy()
+	test_no_clock()
 	test_ranking_and_names()
 	test_determinism()
 	test_soak()
@@ -65,6 +68,13 @@ func _empty_neighbour(w, fid: int) -> int:
 		for n in map.neighbors(i):
 			if w.owner[n] == 0 and map.is_land(n):
 				return n
+	return -1
+
+
+func _first_bot(w, after: int) -> int:
+	for id in range(after + 1, w.factions.size()):
+		if w.factions[id]["kind"] == w.Kind.BOT:
+			return id
 	return -1
 
 
@@ -556,7 +566,7 @@ func test_content() -> void:
 		for party in Rules.BILLS[key]["support"]:
 			check(Rules.PARTIES.has(party), "bill %s supported by a real party" % key)
 	check(Rules.BILL_ORDER.size() == Rules.BILLS.size() and Rules.BUILDING_ORDER.size() == Rules.BUILDINGS.size() and Rules.MINISTER_ORDER.size() == Rules.MINISTERS.size(), "order lists cover the tables")
-	check(Rules.PARTY_ORDER.size() == 6 and Rules.BILLS.size() >= 30 and Rules.BUILDINGS.size() >= 18 and Rules.MINISTERS.size() >= 14 and Rules.EVENTS.size() >= 20, "plenty of content (%d items)" % items)
+	check(Rules.PARTY_ORDER.size() == 6 and Rules.BILLS.size() >= 150 and Rules.BUILDINGS.size() >= 60 and Rules.MINISTERS.size() >= 30 and Rules.EVENTS.size() >= 35, "plenty of content (%d items)" % items)
 	# modifiers aggregate
 	var w = _quiet(61)
 	var f: Dictionary = w.factions[1]
@@ -593,6 +603,137 @@ func test_content() -> void:
 	f["bills"]["disarmament"] = true
 	f["mods_dirty"] = true
 	check(w.building_cost("nuke", 1) == Rules.NUKE_COST * 2, "disarmament doubles nuke cost")
+
+
+func test_content_pass_two() -> void:
+	var Content = preload("res://scripts/sim/content.gd")
+	var valid_keys: Array = Content.MOD_MULT + Content.MOD_ADD + ["cap_flat"]
+	check(Rules.EXTRA_TECHS.size() >= 24 and Rules.PROJECTS.size() >= 20 and Rules.REFORM_ORDER.size() == 6 and Rules.BUDGET.size() >= 8 and Rules.EXTRA_DECREES.size() >= 10, "second content pass is big")
+	check(Content.item_count() >= 350, "item_count counts everything (%d)" % Content.item_count())
+	check(Rules.PROJECT_ORDER.size() == Rules.PROJECTS.size() and Rules.REFORM_ORDER.size() == Rules.REFORMS.size() and Rules.EXTRA_TECH_ORDER.size() == Rules.EXTRA_TECHS.size() and Rules.BUDGET_ORDER.size() == Rules.BUDGET.size(), "new order lists cover the tables")
+	var names := {}
+	for table in [Rules.BILLS, Rules.BUILDINGS, Rules.MINISTERS, Rules.PROJECTS]:
+		for key in table:
+			var d: Dictionary = table[key]
+			check(not names.has(d["name"]), "unique name %s" % d["name"])
+			names[d["name"]] = true
+			if d.has("cat"):
+				check(Rules.CATEGORIES.has(d["cat"]), "category %s exists" % d["cat"])
+	for key in Rules.BILLS:
+		var bl: Dictionary = Rules.BILLS[key]
+		if bl.has("req"):
+			check(Rules.BILLS.has(bl["req"]), "bill %s requires a real bill" % key)
+		if bl.has("req_tech"):
+			check(Rules.TECHS.has(bl["req_tech"]) or Rules.EXTRA_TECHS.has(bl["req_tech"]), "bill %s requires a real tech" % key)
+		for other in bl.get("excl", []):
+			check(Rules.BILLS.has(other) and key in Rules.BILLS[other].get("excl", []), "exclusion %s <-> %s is mutual" % [key, other])
+	for key in Rules.BUILDINGS:
+		check(Rules.PARTIES.has(Rules.BUILDINGS[key]["party"]), "building %s pleases a real party" % key)
+	for axis in Rules.REFORMS:
+		var ax: Dictionary = Rules.REFORMS[axis]
+		check(ax["options"].has(ax["default"]) and ax["options"].size() >= 4, "reform axis %s has a default and 4+ options" % axis)
+		for opt in ax["options"]:
+			for mk in ax["options"][opt]["mods"]:
+				check(mk in valid_keys, "reform mod key %s" % mk)
+			for party in ax["options"][opt]["parties"]:
+				check(Rules.PARTIES.has(party), "reform party %s" % party)
+	for key in Rules.PROJECTS:
+		var p: Dictionary = Rules.PROJECTS[key]
+		check(p["duration"] > 0 and p["cost"] > 0, "project %s has cost and duration" % key)
+		for mk in p["mods"]:
+			check(mk in valid_keys, "project mod key %s" % mk)
+		if p.has("req_tech"):
+			check(Rules.TECHS.has(p["req_tech"]) or Rules.EXTRA_TECHS.has(p["req_tech"]), "project %s requires a real tech" % key)
+	for key in Rules.EXTRA_TECHS:
+		var t: Dictionary = Rules.EXTRA_TECHS[key]
+		check(t["costs"].size() == t["max"] and (t["req"] == "" or Rules.TECHS.has(t["req"]) or Rules.EXTRA_TECHS.has(t["req"])), "extra tech %s is consistent" % key)
+	for e in Rules.EVENTS:
+		check(e["choices"].size() == 2 and e["title"] != "", "event %s has two choices" % e["title"])
+
+
+func test_reforms_projects_diplomacy() -> void:
+	var w = _quiet(71)
+	var f: Dictionary = w.factions[1]
+	f["gold"] = 1000000.0
+	# bills: prerequisites, exclusions, cost modifiers, repeal
+	check(w.bill_blocked(1, "stock_exchange") != "" and not w.apply({"type": "bill", "player": 1, "bill": "stock_exchange"})["ok"], "bill needs its prerequisite")
+	f["bills"]["free_trade"] = true
+	f["mods_dirty"] = true
+	check(w.bill_blocked(1, "tariffs") != "", "exclusive bills block each other")
+	var gold0: float = f["gold"]
+	f["bills"]["bank_reform"] = true
+	f["bills"]["stock_exchange"] = true
+	check(not w.apply({"type": "repeal", "player": 1, "bill": "bank_reform"})["ok"], "cannot repeal a bill others depend on")
+	check(w.apply({"type": "repeal", "player": 1, "bill": "stock_exchange"})["ok"] and not w.has_bill(1, "stock_exchange"), "repeal works")
+	@warning_ignore("integer_division")
+	check(is_equal_approx(gold0 - f["gold"], float(w.bill_cost(1, "stock_exchange") / 2)), "repeal costs half")
+	f["bills"]["chancellery"] = true
+	f["mods_dirty"] = true
+	check(w.bill_cost(1, "science") == int(round(Rules.BILLS["science"]["cost"] * 0.8)), "bill_cost modifier applies")
+	w.apply({"type": "hire", "player": 1, "minister": "finance"})
+	var sal0: float = w.salaries_of(1)
+	f["bills"]["lean_gov"] = true
+	f["mods_dirty"] = true
+	check(absf(w.salaries_of(1) - sal0 * 0.8) < 1e-6, "salary_mult scales salaries")
+	# reforms
+	check(f["reforms"]["government"] == "republic", "default reform option")
+	var ap0: float = f["approval"]
+	var g0: float = f["gold"]
+	var seats_before: int = w.compute_seats(1)["order"]
+	check(w.apply({"type": "reform", "player": 1, "axis": "government", "option": "junta"})["ok"], "reform applied")
+	check(f["reforms"]["government"] == "junta" and is_equal_approx(g0 - f["gold"], float(w.reform_cost(1))) and absf(ap0 - Rules.REFORM_APPROVAL_HIT - f["approval"]) < 1e-6, "reform costs gold and approval")
+	check(w.mods_of(1)["growth"] > 1.0 and w.compute_seats(1)["order"] > seats_before, "reform changes mods and Duma weights")
+	check(not w.apply({"type": "reform", "player": 1, "axis": "government", "option": "junta"})["ok"], "same option is rejected")
+	# projects
+	check(not w.apply({"type": "project", "player": 1, "project": "space"})["ok"], "project needs its tech")
+	var tc0: int = w.tech_cost(1, "trade")
+	check(w.apply({"type": "project", "player": 1, "project": "literacy"})["ok"] and w.active_projects(1) == 1, "project started")
+	check(not w.apply({"type": "project", "player": 1, "project": "literacy"})["ok"], "no double start")
+	w.apply({"type": "project", "player": 1, "project": "dam"})
+	w.apply({"type": "project", "player": 1, "project": "cathedral"})
+	check(not w.apply({"type": "project", "player": 1, "project": "highways"})["ok"], "at most %d projects at once" % Rules.PROJECT_MAX_ACTIVE)
+	for i in 45 * Rules.TICKS_PER_SEC:
+		w.step()
+	check(w.project_progress(1, "literacy") > 0.4 and w.project_progress(1, "literacy") < 0.6, "project halfway after 45 s (%.2f)" % w.project_progress(1, "literacy"))
+	for i in 50 * Rules.TICKS_PER_SEC:
+		w.step()
+	check(f["projects_done"].get("literacy", false) and not f["projects"].has("literacy"), "project finished")
+	check(w.tech_cost(1, "trade") < tc0, "finished project applies its bonus")
+	# diplomacy
+	var bot := _first_bot(w, 0)
+	var bot2 := _first_bot(w, bot)
+	check(is_equal_approx(w.relation_of(bot, 1), Rules.RELATION_START), "relations start neutral")
+	g0 = f["gold"]
+	check(w.apply({"type": "gift", "player": 1, "target": bot})["ok"] and is_equal_approx(w.relation_of(bot, 1), Rules.RELATION_START + Rules.RELATION_GIFT) and f["gold"] < g0, "gift raises relations")
+	check(w.apply({"type": "pact", "player": 1, "target": bot})["ok"] and w.pact_active(1, bot) and w.pact_active(bot, 1), "pact signed both ways")
+	check(not w.apply({"type": "pact", "player": 1, "target": bot})["ok"], "no double pact")
+	check(w.launch_attack(1, bot, 0.5) != "", "cannot attack a pact partner")
+	w._relation_hit(bot2, 1)
+	check(is_equal_approx(w.relation_of(bot2, 1), Rules.RELATION_START - Rules.RELATION_ATTACK_HIT), "attacks sour relations")
+	check(not w.apply({"type": "pact", "player": 1, "target": bot2})["ok"], "pact refused at low relations")
+	for i in 100 * Rules.TICKS_PER_SEC:
+		w.step()
+	check(w.relation_of(bot2, 1) > Rules.RELATION_START - Rules.RELATION_ATTACK_HIT + 2.0, "relations drift back to neutral")
+	check(w.pact_seconds_left(1, bot) > 0.0 and w.pact_seconds_left(1, bot) < Rules.PACT_SECONDS, "pact runs out")
+	check(not w.apply({"type": "gift", "player": 1, "target": 1})["ok"] and not w.apply({"type": "pact", "player": 1, "target": _first_city_state(w)})["ok"], "gifts and pacts only with rival players")
+	w.apply({"type": "hire", "player": 1, "minister": "foreign"})
+	check(w.relation_of(bot2, 1) >= Rules.RELATION_START - Rules.RELATION_ATTACK_HIT + 10.0, "relation modifier counts")
+
+
+func test_no_clock() -> void:
+	var w = _quiet(72)
+	w.match_start_tick = w.tick - 100000
+	w.step()
+	check(w.seconds() > 9000.0 and w.phase == w.Phase.PLAY, "no time limit: the match goes on after any number of minutes")
+	var f: Dictionary = w.factions[1]
+	var cells0: int = f["cells"]
+	f["cells"] = int(map.land_total * Rules.WIN_LAND_SHARE) + 1
+	w._check_victory()
+	check(w.phase == w.Phase.FINISHED and w.winner_declared == 1, "holding half the land wins")
+	w.resume()
+	w.step()
+	check(w.phase == w.Phase.PLAY and w.winner_declared == 1, "the match can go on after the win without a second result")
+	f["cells"] = cells0
 
 
 func test_ranking_and_names() -> void:

@@ -134,6 +134,36 @@ func _ready() -> void:
 	hud.agitate.connect(func(p): world.apply({"type": "agitate", "player": human, "party": p}))
 	hud.bill.connect(func(b): world.apply({"type": "bill", "player": human, "bill": b}))
 	hud.budget_changed.connect(func(item, level): world.apply({"type": "budget", "player": human, "item": item, "level": level}))
+	hud.repeal.connect(func(b): world.apply({"type": "repeal", "player": human, "bill": b}))
+	hud.reform.connect(func(axis, option): world.apply({"type": "reform", "player": human, "axis": axis, "option": option}))
+	hud.project.connect(func(p): world.apply({"type": "project", "player": human, "project": p}))
+	hud.gift.connect(func(t): world.apply({"type": "gift", "player": human, "target": t}))
+	hud.pact.connect(func(t): world.apply({"type": "pact", "player": human, "target": t}))
+	hud.continue_requested.connect(func(): world.resume())
+	world.bill_repealed.connect(func(fid, key):
+		if fid == human:
+			hud.toast("Закон отменён: %s" % Rules.BILLS[key]["name"], Color(1, 0.9, 0.7))
+			_sfx("build"))
+	world.reform_changed.connect(func(fid, axis, option):
+		if fid == human:
+			hud.toast("%s: %s" % [Rules.REFORMS[axis]["name"], Rules.REFORMS[axis]["options"][option]["name"]], Color(0.85, 0.75, 1))
+			_sfx("win"))
+	world.project_started.connect(func(fid, key):
+		if fid == human:
+			hud.toast("Нацпроект начат: %s (%d с)" % [Rules.PROJECTS[key]["name"], int(Rules.PROJECTS[key]["duration"])], Color(0.85, 0.95, 1))
+			_sfx("build"))
+	world.project_done.connect(func(fid, key):
+		if fid == human:
+			hud.toast("Нацпроект завершён: %s" % Rules.PROJECTS[key]["name"], Color(0.75, 1, 0.75))
+			_sfx("win"))
+	world.pact_signed.connect(func(fid, target):
+		if fid == human:
+			hud.toast("Пакт о ненападении с %s на %d с" % [world.factions[target]["name"], Rules.PACT_SECONDS], Color(0.75, 1, 0.75))
+			_sfx("win"))
+	world.gift_sent.connect(func(fid, target, relation):
+		if fid == human:
+			hud.toast("Подарок отправлен: отношения с %s теперь %d" % [world.factions[target]["name"], int(relation)], Color(0.85, 0.95, 1))
+			_sfx("build"))
 	world.bill_result.connect(func(fid, key, passed, support):
 		if fid == human:
 			var name: String = Rules.BILLS[key]["name"]
@@ -443,9 +473,11 @@ func _on_match_finished(winner: int) -> void:
 	for i in mini(5, ranking.size()):
 		var f: Dictionary = ranking[i]
 		lines.append("%d. %s — %.1f%%" % [i + 1, f["name"], world.land_share(f["id"]) * 100.0])
-	var title := "Победа!" if winner == human else "Матч окончен"
-	_sfx("win" if winner == human else "lose")
-	hud.show_result(title, "\n".join(lines) + "\n\nВаше место: #%d" % world.rank_of(human), false)
+	var won: bool = winner == human
+	var title := "Победа!" if won else "Матч окончен"
+	var goal := "%s занял %d%% карты." % [world.factions[winner]["name"], int(Rules.WIN_LAND_SHARE * 100.0)]
+	_sfx("win" if won else "lose")
+	hud.show_result(title, goal + "\n" + "\n".join(lines) + "\n\nВаше место: #%d" % world.rank_of(human), true, "Продолжить завоевание" if won else "Играть дальше")
 
 
 # ------------------------------------------------------------------ command line helpers

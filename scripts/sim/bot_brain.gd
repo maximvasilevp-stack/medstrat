@@ -38,8 +38,21 @@ static func think(world, fid: int) -> void:
 				world.apply({"type": "build", "player": fid, "kind": key, "cell": cell})
 	if f["cells"] > 1000 and world.rng.randf() < 0.15:
 		var bkey: String = Rules.BILL_ORDER[world.rng.randi_range(0, Rules.BILL_ORDER.size() - 1)]
-		if not world.has_bill(fid, bkey) and world.bill_support(fid, bkey) >= Rules.BILL_MAJORITY and f["gold"] >= Rules.BILLS[bkey]["cost"] * 2:
+		if not world.has_bill(fid, bkey) and world.bill_blocked(fid, bkey) == "" and world.bill_support(fid, bkey) >= Rules.BILL_MAJORITY and f["gold"] >= world.bill_cost(fid, bkey) * 2:
 			world.apply({"type": "bill", "player": fid, "bill": bkey})
+	if f["cells"] > 1200 and world.rng.randf() < 0.1:
+		var mkey: String = Rules.MINISTER_ORDER[world.rng.randi_range(0, Rules.MINISTER_ORDER.size() - 1)]
+		var m: Dictionary = Rules.MINISTERS[mkey]
+		if not world.has_minister(fid, mkey) and f["gold"] >= m["fee"] * 4 and world.salaries_of(fid) + m["salary"] < world.gold_rate_of(fid) * 0.3:
+			world.apply({"type": "hire", "player": fid, "minister": mkey})
+	if f["cells"] > 1500 and world.rng.randf() < 0.1 and world.active_projects(fid) < 2:
+		var pkey: String = Rules.PROJECT_ORDER[world.rng.randi_range(0, Rules.PROJECT_ORDER.size() - 1)]
+		if f["gold"] >= Rules.PROJECTS[pkey]["cost"] * 2.5:
+			world.apply({"type": "project", "player": fid, "project": pkey})
+	if f["cells"] > 2000 and world.rng.randf() < 0.03 and f["gold"] >= Rules.REFORM_COST * 5 and f["approval"] > 60.0:
+		var axis: String = Rules.REFORM_ORDER[world.rng.randi_range(0, Rules.REFORM_ORDER.size() - 1)]
+		var options: Array = Rules.REFORMS[axis]["options"].keys()
+		world.apply({"type": "reform", "player": fid, "axis": axis, "option": options[world.rng.randi_range(0, options.size() - 1)]})
 
 	# buildings and research
 	var wants_bunker := false
@@ -89,7 +102,7 @@ static func think(world, fid: int) -> void:
 			var enemy: int = a["attacker"]
 			if enemy == world.human and grace:
 				continue
-			if contacts.has(enemy) and not world.has_attack(fid, enemy):
+			if contacts.has(enemy) and not world.has_attack(fid, enemy) and not world.pact_active(fid, enemy):
 				world.launch_attack(fid, enemy, Rules.BOT_RATIO_RETALIATE)
 				return
 
@@ -110,12 +123,14 @@ static func think(world, fid: int) -> void:
 	var best := 0
 	var best_score := INF
 	for o in contacts:
-		if o == 0 or (grace and o == world.human) or world.has_attack(fid, o):
+		if o == 0 or (grace and o == world.human) or world.has_attack(fid, o) or world.pact_active(fid, o):
 			continue
 		var d: Dictionary = world.factions[o]
 		var score: float = (1.0 + d["troops"] / maxf(1.0, float(d["cells"]))) * (1.0 + d["defense"] * Rules.DEFENSE_BONUS)
 		if d["kind"] == world.Kind.CITY:
 			score *= 0.8
+		else:
+			score *= maxf(0.5, 1.0 + Rules.RELATION_ATTACK_SCALE * (world.relation_of(fid, o) - Rules.RELATION_START) / 50.0)
 		var diplomacy: float = world.mod(o, "diplomacy")
 		if diplomacy > 0.0:
 			score *= 1.0 + (Rules.DIPLOMAT_RATIO - 1.0) * diplomacy
