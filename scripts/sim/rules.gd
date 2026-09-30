@@ -70,6 +70,74 @@ const TACTICS_BONUS := 0.25
 const NAVIGATION_BONUS := 0.5
 const ADMIN_CODE := "666"
 
+# --- people and politics
+const APPROVAL_START := 60.0
+const APPROVAL_DRIFT := 0.05             # share of the gap to the target closed every second
+const APPROVAL_BASE_TARGET := 60.0
+const TAX_APPROVAL := 12.0               # target approval lost per tax level
+const TAX_GOLD_PER_CELL := 0.012         # gold per second per cell per tax level
+const MARKET_APPROVAL := 2.0             # target approval per market (capped)
+const CITY_APPROVAL := 1.0
+const BUILDING_APPROVAL_CAP := 15.0
+const WAR_WEARINESS := 4.0               # target approval lost per running attack (capped)
+const WAR_WEARINESS_CAP := 12.0
+const NUKE_APPROVAL_HIT := 12.0          # immediate approval loss for launching a nuke
+const APPROVAL_GROWTH_MIN := 0.6         # growth multiplier at 0% approval...
+const APPROVAL_GROWTH_MAX := 1.4         # ...and at 100%
+const UNREST_APPROVAL := 25.0            # below this the people start leaving
+const UNREST_PERIOD_TICKS := 30
+const UNREST_CELLS_PER := 500            # one cell lost per this many cells (plus one)
+const ELECTION_PERIOD := 180.0           # seconds between elections
+const ELECTION_WIN_APPROVAL := 50.0
+const ELECTION_WIN_BONUS := 8.0          # approval gained after a win
+const ELECTION_LOSS_TICKS := 600         # penalty length after a lost election
+const ELECTION_LOSS_GROWTH := 0.5
+const ELECTION_LOSS_GOLD := 0.7
+const ELECTION_LOSS_APPROVAL := 45.0     # approval reset after a loss
+const PROPAGANDA_COST := 1500
+const PROPAGANDA_APPROVAL := 12.0
+const PROPAGANDA_COOLDOWN_TICKS := 450
+const FESTIVAL_COST := 3000
+const FESTIVAL_APPROVAL := 20.0
+const FESTIVAL_TICKS := 600              # growth bonus length
+const FESTIVAL_GROWTH := 1.1
+const FESTIVAL_COOLDOWN_TICKS := 1200
+const MOBILIZE_SHARE := 0.15             # troops gained as a share of the cap
+const MOBILIZE_APPROVAL := 15.0
+const MOBILIZE_COOLDOWN_TICKS := 900
+const EVENT_MIN_TICKS := 600             # random events for the human every 60-120 s
+const EVENT_MAX_TICKS := 1200
+const EVENT_TIMEOUT_TICKS := 300         # first option is taken if the player does not answer
+const BOT_PROPAGANDA_APPROVAL := 40.0
+
+## Random events: title, text, two choices with effects. Effects: gold, approval, troops_share, tech.
+const EVENTS := [
+	{"title": "Засуха", "text": "Неурожай в провинциях. Крестьяне просят помощи из казны.",
+		"choices": [{"text": "Помочь (−2000 золота, +10 одобрение)", "gold": -2000, "approval": 10},
+			{"text": "Пусть справляются сами (−10 одобрение)", "approval": -10}]},
+	{"title": "Мятеж на границе", "text": "Гарнизон дальней провинции отказывается подчиняться.",
+		"choices": [{"text": "Подавить (−10% войск, −5 одобрение)", "troops_share": -0.10, "approval": -5},
+			{"text": "Уступить требованиям (−1500 золота, +5 одобрение)", "gold": -1500, "approval": 5}]},
+	{"title": "Купцы просят снизить пошлины", "text": "Гильдии обещают поддержку, если налоги станут мягче.",
+		"choices": [{"text": "Снизить налоги на уровень (+8 одобрение)", "tax": -1, "approval": 8},
+			{"text": "Отказать (+1500 золота, −5 одобрение)", "gold": 1500, "approval": -5}]},
+	{"title": "Учёные просят грант", "text": "Академия обещает прорыв, если оплатить исследования.",
+		"choices": [{"text": "Выделить 4000 золота (случайная технология +1)", "gold": -4000, "tech": 1},
+			{"text": "Отказать", "approval": -2}]},
+	{"title": "Эпидемия", "text": "В городах вспышка болезни.",
+		"choices": [{"text": "Карантин (−15% войск, +5 одобрение)", "troops_share": -0.15, "approval": 5},
+			{"text": "Игнорировать (−8% войск, −10 одобрение)", "troops_share": -0.08, "approval": -10}]},
+	{"title": "Беженцы у границ", "text": "Тысячи людей просят убежища.",
+		"choices": [{"text": "Принять (+8% войск, −5 одобрение)", "troops_share": 0.08, "approval": -5},
+			{"text": "Отказать (+3 одобрение)", "approval": 3}]},
+	{"title": "Богатый урожай", "text": "Амбары полны. Как распорядиться излишками?",
+		"choices": [{"text": "Продать (+3000 золота)", "gold": 3000},
+			{"text": "Раздать народу (+12 одобрение)", "approval": 12}]},
+	{"title": "Генералы требуют войны", "text": "Штаб настаивает на всеобщей мобилизации.",
+		"choices": [{"text": "Мобилизация (+20% войск, −10 одобрение)", "troops_share": 0.20, "approval": -10},
+			{"text": "Отказать генералам (+4 одобрение)", "approval": 4}]},
+]
+
 # --- combat
 const CAPTURE_COST_EMPTY := 3.0          # troops per unclaimed cell for a tiny empire...
 const EMPIRE_COST_CELLS := 1000.0        # ...doubling for every this many cells the attacker already owns

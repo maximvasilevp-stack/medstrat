@@ -11,6 +11,9 @@ extends RefCounted
 ##   {type="build",  player, kind: "city"|"port"|"defense", cell}
 ##   {type="nuke",   player, cell, mega: bool}
 ##   {type="research", player, tech}                             buy the next level of a technology
+##   {type="tax",    player, level}                                0..3
+##   {type="decree", player, kind: "propaganda"|"festival"|"mobilize"}
+##   {type="event_choice", player, choice}                         answer the pending event
 ##   {type="admin",  player, code}                               cheat code: infinite resources
 
 const Rules := preload("res://scripts/sim/rules.gd")
@@ -31,6 +34,11 @@ signal nuke_detonated(cell: int, radius: int)
 signal nuke_intercepted(cell: int, by: int)
 signal tech_researched(faction_id: int, tech: String, level: int)
 signal admin_enabled(faction_id: int)
+signal election_result(faction_id: int, won: bool, approval: float)
+signal event_offered(faction_id: int, event: Dictionary)
+signal event_resolved(faction_id: int, text: String)
+signal unrest(faction_id: int, cells_lost: int)
+signal decree_applied(faction_id: int, kind: String)
 signal faction_eliminated(faction_id: int, by: int)
 signal action_rejected(action: Dictionary, reason: String)
 signal match_started
@@ -129,6 +137,9 @@ func _new_faction(name: String, color: Color, kind: int) -> Dictionary:
 		"cells": 0, "sum_x": 0.0, "sum_y": 0.0,
 		"cities": 0, "ports": 0, "defense": 0, "markets": 0, "barracks": 0, "bunkers": 0, "nukes": 0,
 		"tech": {}, "admin": false,
+		"approval": Rules.APPROVAL_START, "tax": 1, "next_election": 0, "elections_won": 0, "elections_lost": 0,
+		"loss_until": 0, "festival_until": 0, "propaganda_cd": 0, "festival_cd": 0, "mobilize_cd": 0,
+		"event": {}, "event_until": 0, "next_event": 0, "last_election": "",
 		"alive": true, "border": {}, "spawn": -1,
 		"attack_size": Rules.DEFAULT_ATTACK_SIZE,
 	}
@@ -208,6 +219,11 @@ func auto_spawn_human() -> void:
 func _start_match() -> void:
 	phase = Phase.PLAY
 	match_start_tick = tick
+	for id in range(1, factions.size()):
+		var f: Dictionary = factions[id]
+		if f["kind"] != Kind.CITY:
+			f["next_election"] = tick + int(Rules.ELECTION_PERIOD * Rules.TICKS_PER_SEC)
+	factions[human]["next_event"] = tick + rng.randi_range(Rules.EVENT_MIN_TICKS, Rules.EVENT_MAX_TICKS)
 	dirty = true
 	match_started.emit()
 
@@ -314,18 +330,72 @@ func max_troops_of(fid: int) -> float:
 	return Rules.max_troops(f["cells"], f["cities"]) + f["barracks"] * Rules.BARRACKS_CAP
 
 
+func approval_factor(fid: int) -> float:
+	var f: Dictionary = factions[fid]
+	var k: float = clampf(f["approval"] / 100.0, 0.0, 1.0)
+	var m: float = lerpf(Rules.APPROVAL_GROWTH_MIN, Rules.APPROVAL_GROWTH_MAX, k)
+	if tick < f["loss_until"]:
+		m *= Rules.ELECTION_LOSS_GROWTH
+	if tick < f["festival_until"]:
+		m *= Rules.FESTIVAL_GROWTH
+	return m
+
+
 func growth_of(fid: int) -> float:
 	var f: Dictionary = factions[fid]
 	if f["kind"] == Kind.CITY:
 		return f["troops"] * Rules.CITY_STATE_INTEREST + 1.0
 	var extra: float = tech_level(fid, "conscription") * Rules.CONSCRIPTION_BONUS + f["barracks"] * Rules.BARRACKS_INTEREST
-	return Rules.growth_per_sec(f["troops"], f["cells"], f["cities"], extra)
+	return Rules.growth_per_sec(f["troops"], f["cells"], f["cities"], extra) * approval_factor(fid)
+
+
+func population_of(fid: int) -> int:
+	var f: Dictionary = factions[fid]
+	return f["cells"] * 10 + f["cities"] * 500
 
 
 func gold_rate_of(fid: int) -> float:
 	var f: Dictionary = factions[fid]
 	var base := Rules.gold_per_sec(f["cells"], f["ports"])
-	return base * (1.0 + tech_level(fid, "trade") * Rules.TRADE_BONUS) + f["markets"] * Rules.MARKET_GOLD
+	var taxes: float = f["cells"] * f["tax"] * Rules.TAX_GOLD_PER_CELL
+	var rate: float = (base + taxes) * (1.0 + tech_level(fid, "trade") * Rules.TRADE_BONUS) + f["markets"] * Rules.MARKET_GOLD
+	if tick < f["loss_until"]:
+		rate *= Rules.ELECTION_LOSS_GOLD
+	return rate
+
+
+func approval_target(fid: int) -> float:
+	var f: Dictionary = factions[fid]
+	var t: float = Rules.APPROVAL_BASE_TARGET - f["tax"] * Rules.TAX_APPROVAL
+	t += minf(Rules.BUILDING_APPROVAL_CAP, f["markets"] * Rules.MARKET_APPROVAL + f["cities"] * Rules.CITY_APPROVAL)
+	t -= minf(Rules.WAR_WEARINESS_CAP, attacks_of(fid).size() * Rules.WAR_WEARINESS)
+	return clampf(t, 0.0, 100.0)
+
+
+func seconds_to_election(fid: int) -> float:
+	return maxf(0.0, (factions[fid]["next_election"] - tick) * Rules.TICK_DT)
+
+
+func decree_cost(kind: String) -> int:
+	match kind:
+		"propaganda":
+			return Rules.PROPAGANDA_COST
+		"festival":
+			return Rules.FESTIVAL_COST
+	return 0
+
+
+func decree_cooldown(fid: int, kind: String) -> float:
+	var f: Dictionary = factions[fid]
+	var until: int = 0
+	match kind:
+		"propaganda":
+			until = f["propaganda_cd"]
+		"festival":
+			until = f["festival_cd"]
+		"mobilize":
+			until = f["mobilize_cd"]
+	return maxf(0.0, (until - tick) * Rules.TICK_DT)
 
 
 func capture_cost(attacker: int, target: int, cell: int) -> float:
@@ -457,6 +527,8 @@ func step() -> void:
 			var f: Dictionary = factions[id]
 			if f["kind"] == Kind.BOT and f["alive"] and (tick + id * 7) % Rules.BOT_PERIOD_TICKS == 0:
 				BotBrain.think(self, id)
+	if tick % Rules.TICKS_PER_SEC == 0:
+		_politics_second()
 	if tick % 5 == 0:
 		_decay_scorch()
 	_update_heat()
@@ -497,6 +569,92 @@ func _update_heat() -> void:
 		for c in _recent[age]:
 			heat[c] = v
 	heat_dirty = true
+
+
+func _politics_second() -> void:
+	for id in range(1, factions.size()):
+		var f: Dictionary = factions[id]
+		if f["kind"] == Kind.CITY or not f["alive"]:
+			continue
+		f["approval"] = clampf(f["approval"] + (approval_target(id) - f["approval"]) * Rules.APPROVAL_DRIFT, 0.0, 100.0)
+		if f["admin"]:
+			f["approval"] = 100.0
+		if f["approval"] < Rules.UNREST_APPROVAL and tick % Rules.UNREST_PERIOD_TICKS == 0 and f["cells"] > 30:
+			_unrest(id)
+		if tick >= f["next_election"]:
+			_hold_election(id)
+	var h: Dictionary = factions[human]
+	if h["alive"] and h["event"].is_empty() and tick >= h["next_event"]:
+		_offer_event()
+	elif not h["event"].is_empty() and tick >= h["event_until"]:
+		_resolve_event(human, 0)
+
+
+func _unrest(fid: int) -> void:
+	var f: Dictionary = factions[fid]
+	@warning_ignore("integer_division")
+	var n: int = 1 + f["cells"] / Rules.UNREST_CELLS_PER
+	var keys: Array = f["border"].keys()
+	var lost := 0
+	for i in n:
+		if keys.is_empty():
+			break
+		var c: int = keys[rng.randi_range(0, keys.size() - 1)]
+		if owner[c] == fid:
+			_set_owner(c, 0)
+			lost += 1
+	if lost > 0:
+		unrest.emit(fid, lost)
+
+
+func _hold_election(fid: int) -> void:
+	var f: Dictionary = factions[fid]
+	f["next_election"] = tick + int(Rules.ELECTION_PERIOD * Rules.TICKS_PER_SEC)
+	var won: bool = f["approval"] >= Rules.ELECTION_WIN_APPROVAL or f["admin"]
+	if won:
+		f["elections_won"] += 1
+		f["approval"] = minf(100.0, f["approval"] + Rules.ELECTION_WIN_BONUS)
+		f["last_election"] = "победа"
+	else:
+		f["elections_lost"] += 1
+		f["loss_until"] = tick + Rules.ELECTION_LOSS_TICKS
+		f["approval"] = Rules.ELECTION_LOSS_APPROVAL
+		f["last_election"] = "поражение"
+	election_result.emit(fid, won, f["approval"])
+
+
+func _offer_event() -> void:
+	var h: Dictionary = factions[human]
+	var e: Dictionary = Rules.EVENTS[rng.randi_range(0, Rules.EVENTS.size() - 1)]
+	h["event"] = e
+	h["event_until"] = tick + Rules.EVENT_TIMEOUT_TICKS
+	event_offered.emit(human, e)
+
+
+func _resolve_event(fid: int, choice: int) -> void:
+	var f: Dictionary = factions[fid]
+	var e: Dictionary = f["event"]
+	if e.is_empty():
+		return
+	var c: Dictionary = e["choices"][clampi(choice, 0, e["choices"].size() - 1)]
+	f["gold"] = maxf(0.0, f["gold"] + c.get("gold", 0))
+	f["approval"] = clampf(f["approval"] + c.get("approval", 0), 0.0, 100.0)
+	if c.has("troops_share"):
+		f["troops"] = maxf(0.0, f["troops"] + max_troops_of(fid) * c["troops_share"])
+	if c.has("tax"):
+		f["tax"] = clampi(f["tax"] + c["tax"], 0, 3)
+	if c.has("tech"):
+		var options: Array = []
+		for key in Rules.TECH_ORDER:
+			if tech_level(fid, key) < Rules.TECHS[key]["max"] and (Rules.TECHS[key]["req"] == "" or tech_level(fid, Rules.TECHS[key]["req"]) > 0):
+				options.append(key)
+		if not options.is_empty():
+			var key: String = options[rng.randi_range(0, options.size() - 1)]
+			f["tech"][key] = tech_level(fid, key) + 1
+			tech_researched.emit(fid, key, f["tech"][key])
+	f["event"] = {}
+	f["next_event"] = tick + rng.randi_range(Rules.EVENT_MIN_TICKS, Rules.EVENT_MAX_TICKS)
+	event_resolved.emit(fid, "%s: %s" % [e["title"], c["text"]])
 
 
 func _decay_scorch() -> void:
@@ -829,11 +987,45 @@ func _apply(a: Dictionary) -> String:
 				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
 			f["gold"] -= cost
 			f["nukes"] += 1
+			f["approval"] = clampf(f["approval"] - Rules.NUKE_APPROVAL_HIT, 0.0, 100.0)
 			var from := centroid_cell(fid)
 			@warning_ignore("integer_division")
 			var flight: int = Rules.NUKE_FLIGHT_TICKS / 2 if tech_level(fid, "rockets") > 0 else Rules.NUKE_FLIGHT_TICKS
 			missiles.append({"player": fid, "cell": c, "from": from, "mega": mega, "ticks_left": flight})
 			nuke_launched.emit(fid, from, c, flight, mega)
+			return ""
+		"tax":
+			f["tax"] = clampi(int(a["level"]), 0, 3)
+			return ""
+		"decree":
+			var kind: String = a["kind"]
+			if decree_cooldown(fid, kind) > 0.0:
+				return "Указ ещё не готов (%d с)" % int(ceil(decree_cooldown(fid, kind)))
+			var cost := decree_cost(kind)
+			if f["gold"] < cost:
+				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
+			match kind:
+				"propaganda":
+					f["gold"] -= cost
+					f["approval"] = minf(100.0, f["approval"] + Rules.PROPAGANDA_APPROVAL)
+					f["propaganda_cd"] = tick + Rules.PROPAGANDA_COOLDOWN_TICKS
+				"festival":
+					f["gold"] -= cost
+					f["approval"] = minf(100.0, f["approval"] + Rules.FESTIVAL_APPROVAL)
+					f["festival_until"] = tick + Rules.FESTIVAL_TICKS
+					f["festival_cd"] = tick + Rules.FESTIVAL_COOLDOWN_TICKS
+				"mobilize":
+					f["troops"] += max_troops_of(fid) * Rules.MOBILIZE_SHARE
+					f["approval"] = maxf(0.0, f["approval"] - Rules.MOBILIZE_APPROVAL)
+					f["mobilize_cd"] = tick + Rules.MOBILIZE_COOLDOWN_TICKS
+				_:
+					return "Неизвестный указ"
+			decree_applied.emit(fid, kind)
+			return ""
+		"event_choice":
+			if f["event"].is_empty():
+				return "Нет события"
+			_resolve_event(fid, int(a["choice"]))
 			return ""
 		"research":
 			var key: String = a["tech"]

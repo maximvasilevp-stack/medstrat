@@ -15,6 +15,14 @@ static func think(world, fid: int) -> void:
 	var contacts: Dictionary = world.contacts_of(fid)
 	var grace: bool = world.seconds() < Rules.BOT_GRACE_SECONDS
 
+	# keep the people happy
+	if f["approval"] < Rules.BOT_PROPAGANDA_APPROVAL and f["gold"] >= Rules.PROPAGANDA_COST * 2 and world.decree_cooldown(fid, "propaganda") == 0.0:
+		world.apply({"type": "decree", "player": fid, "kind": "propaganda"})
+	if f["approval"] < 35.0 and f["tax"] > 0:
+		world.apply({"type": "tax", "player": fid, "level": f["tax"] - 1})
+	elif f["approval"] > 75.0 and f["tax"] < 2:
+		world.apply({"type": "tax", "player": fid, "level": f["tax"] + 1})
+
 	# buildings and research
 	var wants_bunker := false
 	for o in contacts:

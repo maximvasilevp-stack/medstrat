@@ -1,7 +1,13 @@
 extends Control
-## Modal "Выход" dialog: back to the main menu or quit to desktop. Pauses the game while open.
+## In-game menu (Esc): continue, sound, admin code, main menu, quit. Pauses the game while open.
 
 const ThemeFactory := preload("res://scripts/ui/theme_factory.gd")
+
+signal mute_toggled
+signal admin_code(code: String)
+
+var sound_button: Button
+var code_edit: LineEdit
 
 
 func _ready() -> void:
@@ -15,30 +21,59 @@ func _ready() -> void:
 	add_child(dim)
 	var panel := PanelContainer.new()
 	panel.set_anchors_and_offsets_preset(PRESET_CENTER)
-	panel.offset_left = -190
-	panel.offset_right = 190
-	panel.offset_top = -120
-	panel.offset_bottom = 120
+	panel.offset_left = -200
+	panel.offset_right = 200
+	panel.offset_top = -190
+	panel.offset_bottom = 190
 	add_child(panel)
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 12)
+	box.add_theme_constant_override("separation", 10)
 	panel.add_child(box)
 	var title := Label.new()
-	title.text = "Выход"
+	title.text = "МЕНЮ"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 24)
 	box.add_child(title)
+	_button(box, "Продолжить", close)
+	sound_button = _button(box, "Звук: вкл", func(): mute_toggled.emit())
+	var code_row := HBoxContainer.new()
+	code_row.add_theme_constant_override("separation", 8)
+	box.add_child(code_row)
+	code_edit = LineEdit.new()
+	code_edit.placeholder_text = "Секретный код"
+	code_edit.max_length = 12
+	code_edit.size_flags_horizontal = SIZE_EXPAND_FILL
+	code_edit.custom_minimum_size = Vector2(0, 40)
+	code_edit.text_submitted.connect(func(_t): _submit_code())
+	code_row.add_child(code_edit)
+	var ok := Button.new()
+	ok.text = "OK"
+	ok.custom_minimum_size = Vector2(60, 40)
+	ok.pressed.connect(_submit_code)
+	code_row.add_child(ok)
 	_button(box, "В главное меню", _to_menu)
 	_button(box, "Выйти на рабочий стол", func(): get_tree().quit())
-	_button(box, "Отмена", close)
 
 
-func _button(parent: Node, text: String, cb: Callable) -> void:
+func _button(parent: Node, text: String, cb: Callable) -> Button:
 	var b := Button.new()
 	b.text = text
-	b.custom_minimum_size = Vector2(0, 44)
+	b.custom_minimum_size = Vector2(0, 42)
 	b.pressed.connect(cb)
 	parent.add_child(b)
+	return b
+
+
+func _submit_code() -> void:
+	var code := code_edit.text.strip_edges()
+	code_edit.text = ""
+	if code != "":
+		admin_code.emit(code)
+		close()
+
+
+func set_muted(muted: bool) -> void:
+	sound_button.text = "Звук: выкл" if muted else "Звук: вкл"
 
 
 func open() -> void:

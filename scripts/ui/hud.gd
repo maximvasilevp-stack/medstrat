@@ -11,6 +11,9 @@ signal mode_selected(kind: String)      # "" = no placement / targeting mode
 signal research(tech: String)
 signal admin_code(code: String)
 signal zoom_requested(step: int)
+signal tax_changed(level: int)
+signal decree(kind: String)
+signal event_choice(choice: int)
 signal exit_pressed
 signal attack_size_changed(ratio: float)
 signal cancel_attack(target: int)
@@ -55,12 +58,24 @@ var attacks_panel: PanelContainer
 var attacks_box: VBoxContainer
 var tooltip: PanelContainer
 var tooltip_label: Label
-var sound_button: Button
 var tech_panel: PanelContainer
 var tech_rows: Dictionary = {}
 var tech_gold: Label
-var code_panel: PanelContainer
-var code_edit: LineEdit
+var people_block: Button
+var people_panel: PanelContainer
+var people_labels: Dictionary = {}
+var people_bar: ProgressBar
+var tax_buttons: Array = []
+var tax_group := ButtonGroup.new()
+var decree_buttons: Dictionary = {}
+var event_panel: PanelContainer
+var event_title: Label
+var event_text: Label
+var event_buttons: Array = []
+var approval_value: Label
+var approval_bar: ProgressBar
+var election_label: Label
+var _tax_syncing := false
 var overlay: Control
 var overlay_title: Label
 var overlay_body: Label
@@ -82,7 +97,8 @@ func _ready() -> void:
 	_build_attacks_panel()
 	_build_zoom_buttons()
 	_build_tech_panel()
-	_build_code_panel()
+	_build_people_panel()
+	_build_event_panel()
 	_build_tooltip()
 	_build_toast()
 	_build_overlay()
@@ -139,26 +155,12 @@ func _build_top() -> void:
 	row.position = Vector2(12, 12)
 	row.add_theme_constant_override("separation", 8)
 	add_child(row)
-	var exit_button := Button.new()
-	exit_button.text = "Выход"
-	exit_button.custom_minimum_size = Vector2(110, 38)
-	exit_button.pressed.connect(func(): exit_pressed.emit())
-	row.add_child(exit_button)
-	sound_button = Button.new()
-	sound_button.custom_minimum_size = Vector2(120, 38)
-	sound_button.tooltip_text = "Клавиша M"
-	sound_button.pressed.connect(func(): mute_toggled.emit())
-	row.add_child(sound_button)
-	set_muted(false)
-	var code_button := Button.new()
-	code_button.text = "Код"
-	code_button.custom_minimum_size = Vector2(70, 38)
-	code_button.tooltip_text = "Ввести админ-код"
-	code_button.pressed.connect(func():
-		code_panel.visible = not code_panel.visible
-		if code_panel.visible:
-			code_edit.grab_focus())
-	row.add_child(code_button)
+	var menu_button := Button.new()
+	menu_button.text = "≡ Меню"
+	menu_button.custom_minimum_size = Vector2(110, 36)
+	menu_button.tooltip_text = "Esc: звук, код, выход"
+	menu_button.pressed.connect(func(): exit_pressed.emit())
+	row.add_child(menu_button)
 
 	timer_bar = _bar(Color(0.36, 0.78, 0.36), 12)
 	timer_bar.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
@@ -352,6 +354,31 @@ func _build_resources() -> void:
 	gold_rate.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	gold.add_child(gold_rate)
 
+	people_block = Button.new()
+	people_block.custom_minimum_size = Vector2(170, 0)
+	people_block.tooltip_text = "Народ: налоги, указы, выборы (P)"
+	people_block.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
+	people_block.add_theme_stylebox_override("pressed", StyleBoxEmpty.new())
+	people_block.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	people_block.pressed.connect(toggle_people)
+	row.add_child(people_block)
+	var people := VBoxContainer.new()
+	people.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	people.mouse_filter = MOUSE_FILTER_IGNORE
+	people.add_theme_constant_override("separation", 2)
+	people_block.add_child(people)
+	var people_title := _label("Народ", 10, ThemeFactory.TEXT_DIM)
+	people_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	people.add_child(people_title)
+	approval_value = _label("60%", 22, Color(0.6, 0.9, 0.6))
+	approval_value.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	people.add_child(approval_value)
+	approval_bar = _bar(Color(0.45, 0.8, 0.45), 6)
+	people.add_child(approval_bar)
+	election_label = _label("", 11, ThemeFactory.TEXT_DIM)
+	election_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	people.add_child(election_label)
+
 	var attack_row := HBoxContainer.new()
 	attack_row.add_theme_constant_override("separation", 10)
 	box.add_child(attack_row)
@@ -432,7 +459,10 @@ func _build_tech_panel() -> void:
 	close.custom_minimum_size = Vector2(36, 32)
 	close.pressed.connect(toggle_tech)
 	head.add_child(close)
-	box.add_child(_label("Технологии покупаются за золото и действуют до конца матча.", 11, ThemeFactory.TEXT_DIM))
+	var thint := _label("Технологии покупаются за золото и действуют до конца матча.", 11, ThemeFactory.TEXT_DIM)
+	thint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	thint.custom_minimum_size = Vector2(620, 0)
+	box.add_child(thint)
 	for key in Rules.TECH_ORDER:
 		var t: Dictionary = Rules.TECHS[key]
 		var row := HBoxContainer.new()
@@ -457,32 +487,162 @@ func _build_tech_panel() -> void:
 		tech_rows[key] = {"level": level, "button": button}
 
 
-func _build_code_panel() -> void:
-	code_panel = PanelContainer.new()
-	code_panel.position = Vector2(12, 58)
-	code_panel.visible = false
-	add_child(code_panel)
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 8)
-	code_panel.add_child(row)
-	row.add_child(_label("Админ-код:", 13))
-	code_edit = LineEdit.new()
-	code_edit.custom_minimum_size = Vector2(120, 34)
-	code_edit.max_length = 12
-	code_edit.placeholder_text = "код"
-	code_edit.text_submitted.connect(func(t): _submit_code())
-	row.add_child(code_edit)
-	var ok := Button.new()
-	ok.text = "OK"
-	ok.custom_minimum_size = Vector2(60, 34)
-	ok.pressed.connect(_submit_code)
-	row.add_child(ok)
+func _build_people_panel() -> void:
+	people_panel = PanelContainer.new()
+	people_panel.set_anchors_and_offsets_preset(PRESET_CENTER)
+	people_panel.offset_left = -330
+	people_panel.offset_right = 330
+	people_panel.offset_top = -250
+	people_panel.offset_bottom = 250
+	people_panel.visible = false
+	add_child(people_panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 8)
+	people_panel.add_child(box)
+	var head := HBoxContainer.new()
+	box.add_child(head)
+	var title := _label("НАРОД", 20)
+	title.size_flags_horizontal = SIZE_EXPAND_FILL
+	head.add_child(title)
+	var close := Button.new()
+	close.text = "✕"
+	close.custom_minimum_size = Vector2(36, 32)
+	close.pressed.connect(toggle_people)
+	head.add_child(close)
+	for key in ["population", "approval", "target", "election", "effects"]:
+		var l := _label("", 13)
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		box.add_child(l)
+		people_labels[key] = l
+	people_bar = _bar(Color(0.45, 0.8, 0.45), 10)
+	box.add_child(people_bar)
+	var hint := _label("Одобрение тянется к цели: налоги и войны его снижают, рынки и города поднимают. Ниже 25% люди уходят с окраин. Раз в 3 минуты выборы: меньше 50% — поражение и штраф на минуту.", 11, ThemeFactory.TEXT_DIM)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.custom_minimum_size = Vector2(620, 0)
+	box.add_child(hint)
+
+	box.add_child(_label("НАЛОГИ", 12, ThemeFactory.TEXT_DIM))
+	var taxes := HBoxContainer.new()
+	taxes.add_theme_constant_override("separation", 6)
+	box.add_child(taxes)
+	tax_group.allow_unpress = false
+	var names := ["Нет", "Низкие", "Средние", "Высокие"]
+	for i in 4:
+		var b := Button.new()
+		b.text = names[i]
+		b.toggle_mode = true
+		b.button_group = tax_group
+		b.size_flags_horizontal = SIZE_EXPAND_FILL
+		b.custom_minimum_size = Vector2(0, 34)
+		var level := i
+		b.toggled.connect(func(on):
+			if on and not _tax_syncing:
+				tax_changed.emit(level))
+		taxes.add_child(b)
+		tax_buttons.append(b)
+
+	box.add_child(_label("УКАЗЫ", 12, ThemeFactory.TEXT_DIM))
+	var decrees := [
+		["propaganda", "Пропаганда", "+12 одобрение", "%s золота" % Names.short_number(Rules.PROPAGANDA_COST)],
+		["festival", "Праздник", "+20 одобрение, +10% роста армии на минуту", "%s золота" % Names.short_number(Rules.FESTIVAL_COST)],
+		["mobilize", "Мобилизация", "+15% лимита войск сразу, −15 одобрение", "бесплатно"],
+	]
+	for d in decrees:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		box.add_child(row)
+		var text := VBoxContainer.new()
+		text.size_flags_horizontal = SIZE_EXPAND_FILL
+		text.add_theme_constant_override("separation", 0)
+		row.add_child(text)
+		text.add_child(_label(d[1], 14))
+		text.add_child(_label("%s · %s" % [d[2], d[3]], 11, ThemeFactory.TEXT_DIM))
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(150, 34)
+		b.text = "Издать"
+		var kind: String = d[0]
+		b.pressed.connect(func(): decree.emit(kind))
+		row.add_child(b)
+		decree_buttons[kind] = b
 
 
-func _submit_code() -> void:
-	admin_code.emit(code_edit.text.strip_edges())
-	code_edit.text = ""
-	code_panel.visible = false
+func _build_event_panel() -> void:
+	event_panel = PanelContainer.new()
+	event_panel.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
+	event_panel.offset_left = -260
+	event_panel.offset_right = 260
+	event_panel.offset_top = 100
+	event_panel.offset_bottom = 100
+	event_panel.visible = false
+	event_panel.z_index = 5
+	add_child(event_panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 8)
+	event_panel.add_child(box)
+	event_title = _label("", 18, Color(1.0, 0.85, 0.35))
+	box.add_child(event_title)
+	event_text = _label("", 13)
+	event_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(event_text)
+	for i in 2:
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(0, 38)
+		var idx := i
+		b.pressed.connect(func(): event_choice.emit(idx))
+		box.add_child(b)
+		event_buttons.append(b)
+
+
+func toggle_people() -> void:
+	people_panel.visible = not people_panel.visible
+	if people_panel.visible:
+		tech_panel.visible = false
+		_refresh_people()
+
+
+func show_event(e: Dictionary) -> void:
+	event_title.text = e["title"]
+	event_text.text = e["text"]
+	for i in 2:
+		event_buttons[i].text = e["choices"][i]["text"]
+	event_panel.visible = true
+
+
+func hide_event() -> void:
+	event_panel.visible = false
+
+
+func _refresh_people() -> void:
+	var f: Dictionary = world.factions[human]
+	var approval: float = f["approval"]
+	people_labels["population"].text = "Население: %s · Золото с налогов: +%s / сек" % [Names.short_number(world.population_of(human)), Names.short_number(f["cells"] * f["tax"] * Rules.TAX_GOLD_PER_CELL)]
+	people_labels["approval"].text = "Одобрение: %d%% (рост армии ×%.2f)" % [int(approval), world.approval_factor(human)]
+	people_labels["target"].text = "Тянется к %d%%" % int(world.approval_target(human))
+	var secs: int = int(world.seconds_to_election(human))
+	@warning_ignore("integer_division")
+	people_labels["election"].text = "Выборы через %d:%02d · побед %d · поражений %d%s" % [secs / 60, secs % 60, f["elections_won"], f["elections_lost"],
+		("" if f["last_election"] == "" else " · последние: " + f["last_election"])]
+	var effects: Array = []
+	if world.tick < f["loss_until"]:
+		effects.append("поражение на выборах: −50% роста, −30% золота ещё %d с" % int((f["loss_until"] - world.tick) * Rules.TICK_DT))
+	if world.tick < f["festival_until"]:
+		effects.append("праздник: +10% роста ещё %d с" % int((f["festival_until"] - world.tick) * Rules.TICK_DT))
+	people_labels["effects"].text = "Эффекты: " + (", ".join(effects) if not effects.is_empty() else "нет")
+	people_bar.value = approval / 100.0
+	_tax_syncing = true
+	for i in tax_buttons.size():
+		tax_buttons[i].button_pressed = (i == f["tax"])
+	_tax_syncing = false
+	for kind in decree_buttons:
+		var b: Button = decree_buttons[kind]
+		var cd: float = world.decree_cooldown(human, kind)
+		var cost: int = world.decree_cost(kind)
+		if cd > 0.0:
+			b.text = "через %d с" % int(ceil(cd))
+			b.disabled = true
+		else:
+			b.text = "Издать"
+			b.disabled = f["gold"] < cost
 
 
 func toggle_tech() -> void:
@@ -616,11 +776,7 @@ func set_mode(kind: String) -> void:
 		"nuke", "mega":
 			status_label.text = "Клик по цели: через 3 секунды земля в радиусе станет ничьей и выжженной. Esc — отмена"
 		_:
-			status_label.text = "Клик по земле — атака долей армии · с портом клик по берегу за морем — высадка"
-
-
-func set_muted(muted: bool) -> void:
-	sound_button.text = "Звук: выкл" if muted else "Звук: вкл"
+			status_label.text = ""
 
 
 func set_tooltip(text: String, at: Vector2) -> void:
@@ -681,6 +837,16 @@ func refresh(delta: float) -> void:
 	army_rate.text = "+%s / сек" % Names.short_number(world.growth_of(human))
 	gold_value.text = Names.short_number(f["gold"])
 	gold_rate.text = "+%s / сек" % Names.short_number(world.gold_rate_of(human))
+	var approval: float = f["approval"]
+	approval_value.text = "%d%%" % int(approval)
+	var ac := Color(0.6, 0.9, 0.6) if approval >= 50.0 else (Color(1.0, 0.85, 0.35) if approval >= 25.0 else Color(1.0, 0.45, 0.4))
+	approval_value.add_theme_color_override("font_color", ac)
+	approval_bar.value = approval / 100.0
+	if not spawning:
+		var secs: int = int(world.seconds_to_election(human))
+		@warning_ignore("integer_division")
+		election_label.text = "выборы через %d:%02d" % [secs / 60, secs % 60]
+
 	attack_troops.text = Names.short_number(f["troops"] * attack_slider.value) + " войск"
 	for kind in card_costs:
 		var cost: int = world.building_cost(kind, human)
@@ -694,6 +860,8 @@ func refresh(delta: float) -> void:
 			l.add_theme_color_override("font_color", Color(1.0, 0.85, 0.35) if f["gold"] >= cost else Color(1.0, 0.45, 0.4))
 	if tech_panel.visible and _attacks_timer <= 0.0:
 		_refresh_tech()
+	if people_panel.visible and _attacks_timer <= 0.0:
+		_refresh_people()
 
 	_lb_timer -= delta
 	if _lb_timer <= 0.0:

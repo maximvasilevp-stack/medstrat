@@ -35,6 +35,7 @@ func _init() -> void:
 	test_buildings()
 	test_tech_and_new_buildings()
 	test_admin()
+	test_politics()
 	test_ranking_and_names()
 	test_determinism()
 	test_soak()
@@ -153,6 +154,7 @@ func test_spawn() -> void:
 
 func test_growth() -> void:
 	var w = _quiet(6)
+	w.factions[1]["next_event"] = 1 << 40   # no random events: they may add troops above the cap
 	var t0: float = w.factions[1]["troops"]
 	var g0: float = w.factions[1]["gold"]
 	for i in 10:
@@ -414,6 +416,78 @@ func test_admin() -> void:
 	w.apply({"type": "build", "player": 1, "kind": "city", "cell": f["spawn"]})
 	w.step()
 	check(f["gold"] > 1e8, "gold refills every tick")
+
+
+func test_politics() -> void:
+	var w = _quiet(41)
+	var f: Dictionary = w.factions[1]
+	check(is_equal_approx(f["approval"], Rules.APPROVAL_START), "approval starts at the base value")
+	# taxes pull approval down and raise gold
+	var rate1: float = w.gold_rate_of(1)
+	check(w.apply({"type": "tax", "player": 1, "level": 3})["ok"] and f["tax"] == 3, "tax level set")
+	check(w.gold_rate_of(1) > rate1, "higher taxes bring more gold")
+	for i in 300:
+		w.step()
+	check(f["approval"] < Rules.APPROVAL_START, "high taxes erode approval (%.1f)" % f["approval"])
+	w.apply({"type": "tax", "player": 1, "level": 0})
+	var a0: float = f["approval"]
+	for i in 300:
+		w.step()
+	check(f["approval"] > a0, "no taxes restore approval")
+	# growth depends on approval
+	f["approval"] = 100.0
+	var g_high: float = w.growth_of(1)
+	f["approval"] = 0.0
+	check(w.growth_of(1) < g_high, "unhappy people grow the army slower")
+	# unrest below the threshold
+	f["approval"] = 10.0
+	var cells0: int = f["cells"]
+	var events := {"unrest": 0, "elections": [], "offered": 0, "resolved": 0}
+	w.unrest.connect(func(fid, lost): if fid == 1: events["unrest"] += lost)
+	w.election_result.connect(func(fid, won, _a): if fid == 1: events["elections"].append(won))
+	w.event_offered.connect(func(fid, _e): if fid == 1: events["offered"] += 1)
+	w.event_resolved.connect(func(fid, _t): if fid == 1: events["resolved"] += 1)
+	for i in Rules.UNREST_PERIOD_TICKS * 2 + 2:
+		w.step()
+		f["approval"] = 10.0
+	check(events["unrest"] > 0 and f["cells"] < cells0, "unrest costs land")
+	# elections
+	f["approval"] = 30.0
+	f["next_election"] = w.tick + 1
+	for i in 12:
+		w.step()
+	check(events["elections"] == [false] and f["elections_lost"] == 1 and w.tick < f["loss_until"], "low approval loses the election")
+	check(w.approval_factor(1) < 1.0, "lost election halves growth")
+	f["approval"] = 80.0
+	f["next_election"] = w.tick + 1
+	for i in 12:
+		w.step()
+	check(events["elections"] == [false, true] and f["elections_won"] == 1, "high approval wins the election")
+	# decrees
+	f["gold"] = 0.0
+	check(not w.apply({"type": "decree", "player": 1, "kind": "propaganda"})["ok"], "propaganda needs gold")
+	f["gold"] = 10000.0
+	var ap: float = f["approval"]
+	check(w.apply({"type": "decree", "player": 1, "kind": "propaganda"})["ok"] and f["approval"] > ap, "propaganda raises approval")
+	check(not w.apply({"type": "decree", "player": 1, "kind": "propaganda"})["ok"], "propaganda has a cooldown")
+	var t0: float = f["troops"]
+	check(w.apply({"type": "decree", "player": 1, "kind": "mobilize"})["ok"] and f["troops"] > t0, "mobilisation adds troops")
+	check(w.apply({"type": "decree", "player": 1, "kind": "festival"})["ok"] and w.tick < f["festival_until"], "festival active")
+	# events
+	f["next_event"] = w.tick + 1
+	for i in 12:
+		w.step()
+	check(events["offered"] == 1 and not f["event"].is_empty(), "an event was offered")
+	check(w.apply({"type": "event_choice", "player": 1, "choice": 1})["ok"] and f["event"].is_empty(), "choice resolves the event")
+	check(events["resolved"] == 1 and f["next_event"] > w.tick, "next event scheduled")
+	f["next_event"] = w.tick + 1
+	for i in 12:
+		w.step()
+	f["event_until"] = w.tick + 1
+	for i in 12:
+		w.step()
+	check(events["resolved"] == 2 and f["event"].is_empty(), "unanswered event resolves by itself")
+	check(not w.apply({"type": "event_choice", "player": 1, "choice": 0})["ok"], "no choice without an event")
 
 
 func test_ranking_and_names() -> void:

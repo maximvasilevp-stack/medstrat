@@ -97,8 +97,6 @@ func _ready() -> void:
 	hud = HudScene.instantiate()
 	add_child(hud)
 	hud.setup(world)
-	if settings != null:
-		hud.set_muted(settings.muted)
 	minimap = Minimap.new()
 	minimap.setup(map, world, camera, container, view.mat)
 	minimap.set_anchors_and_offsets_preset(PRESET_BOTTOM_LEFT)
@@ -109,6 +107,9 @@ func _ready() -> void:
 	add_child(minimap)
 	exit_dialog = ExitDialogScene.instantiate()
 	add_child(exit_dialog)
+	exit_dialog.set_muted(settings != null and settings.muted)
+	exit_dialog.mute_toggled.connect(_toggle_mute)
+	exit_dialog.admin_code.connect(func(code): world.apply({"type": "admin", "player": human, "code": code}))
 
 	world_node.cell_clicked.connect(_on_cell_clicked)
 	world_node.cell_hovered.connect(_on_cell_hovered)
@@ -118,10 +119,11 @@ func _ready() -> void:
 	hud.attack_size_changed.connect(func(v): world.factions[human]["attack_size"] = v)
 	hud.cancel_attack.connect(func(t): world.apply({"type": "cancel", "player": human, "target": t}))
 	hud.exit_pressed.connect(func(): exit_dialog.open())
-	hud.mute_toggled.connect(_toggle_mute)
 	hud.research.connect(func(k): world.apply({"type": "research", "player": human, "tech": k}))
-	hud.admin_code.connect(func(code): world.apply({"type": "admin", "player": human, "code": code}))
 	hud.zoom_requested.connect(func(step): camera.zoom_step(step))
+	hud.tax_changed.connect(func(level): world.apply({"type": "tax", "player": human, "level": level}))
+	hud.decree.connect(func(kind): world.apply({"type": "decree", "player": human, "kind": kind}))
+	hud.event_choice.connect(func(idx): world.apply({"type": "event_choice", "player": human, "choice": idx}))
 	hud.menu_requested.connect(func(): get_tree().change_scene_to_file("res://scenes/main_menu.tscn"))
 	hud.restart_requested.connect(func(): get_tree().reload_current_scene())
 	world.match_started.connect(_on_match_started)
@@ -133,6 +135,24 @@ func _ready() -> void:
 	world.nuke_detonated.connect(func(_c, _r): _sfx("boom"))
 	world.nuke_intercepted.connect(_on_nuke_intercepted)
 	world.tech_researched.connect(_on_tech_researched)
+	world.election_result.connect(_on_election)
+	world.event_offered.connect(func(fid, e):
+		if fid == human:
+			hud.show_event(e)
+			_sfx("click"))
+	world.event_resolved.connect(func(fid, text):
+		if fid == human:
+			hud.hide_event()
+			hud.toast(text, Color(1, 0.95, 0.8)))
+	world.unrest.connect(func(fid, lost):
+		if fid == human:
+			hud.toast("Волнения: народ уходит, потеряно клеток: %d. Снизьте налоги или издайте указ" % lost, Color(1, 0.55, 0.45))
+			_sfx("error", -4.0, 1.0))
+	world.decree_applied.connect(func(fid, kind):
+		if fid == human:
+			var names := {"propaganda": "Пропаганда", "festival": "Праздник", "mobilize": "Мобилизация"}
+			hud.toast("Указ: %s" % names[kind], Color(0.85, 0.95, 1))
+			_sfx("build"))
 	world.admin_enabled.connect(func(_f):
 		hud.toast("Админ-режим: бесконечные золото и армия, все технологии открыты", Color(1, 0.85, 0.35))
 		_sfx("win"))
@@ -220,6 +240,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.physical_keycode == KEY_T:
 			hud.toggle_tech()
 			get_viewport().set_input_as_handled()
+		elif event.physical_keycode == KEY_P:
+			hud.toggle_people()
+			get_viewport().set_input_as_handled()
 		elif event.physical_keycode == KEY_M:
 			_toggle_mute()
 			get_viewport().set_input_as_handled()
@@ -267,6 +290,8 @@ func _on_cell_clicked(i: int) -> void:
 		return
 	if hud.tech_panel.visible:
 		hud.toggle_tech()
+	if hud.people_panel.visible:
+		hud.toggle_people()
 	if mode == "nuke" or mode == "mega":
 		var r: Dictionary = world.apply({"type": "nuke", "player": human, "cell": i, "mega": mode == "mega"})
 		if r["ok"]:
@@ -291,7 +316,7 @@ func _toggle_mute() -> void:
 		return
 	settings.muted = not settings.muted
 	settings.save()
-	hud.set_muted(settings.muted)
+	exit_dialog.set_muted(settings.muted)
 
 
 # ------------------------------------------------------------------ world events
@@ -339,6 +364,18 @@ func _on_nuke_launched(fid: int, _from: int, _to: int, _ticks: int, mega: bool) 
 func _on_nuke_intercepted(_cell: int, by: int) -> void:
 	hud.toast("Бомба сбита бункером (%s)" % world.factions[by]["name"], Color(0.8, 0.9, 1))
 	_sfx("error", -4.0)
+
+
+func _on_election(fid: int, won: bool, approval: float) -> void:
+	if fid == human:
+		if won:
+			hud.toast("Выборы выиграны: одобрение %d%%. Народ с вами!" % int(approval), Color(0.75, 1, 0.75))
+			_sfx("win")
+		else:
+			hud.toast("Выборы проиграны: минуту штраф к росту и золоту. Поднимайте одобрение!", Color(1, 0.55, 0.45))
+			_sfx("lose")
+	elif not won and world.factions[fid]["kind"] == world.Kind.BOT and world.factions[fid]["cells"] > 1000:
+		hud.toast("%s проигрывает выборы" % world.factions[fid]["name"], Color(0.9, 0.9, 0.9))
 
 
 func _on_tech_researched(fid: int, key: String, level: int) -> void:
@@ -389,6 +426,8 @@ func _handle_args() -> void:
 	var demo := false
 	var open_exit := false
 	var open_tech := false
+	var open_people := false
+	var open_event := false
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--screenshot="):
 			screenshot_path = a.get_slice("=", 1)
@@ -402,6 +441,10 @@ func _handle_args() -> void:
 			open_exit = true
 		elif a == "--open-tech":
 			open_tech = true
+		elif a == "--open-people":
+			open_people = true
+		elif a == "--open-event":
+			open_event = true
 	if run_ticks > 0 or demo:
 		world.auto_spawn_human()
 	if demo:
@@ -412,6 +455,11 @@ func _handle_args() -> void:
 		exit_dialog.open()
 	if open_tech:
 		hud.toggle_tech()
+	if open_people:
+		hud.toggle_people()
+	if open_event:
+		world.factions[human]["next_event"] = world.tick
+		world._offer_event()
 	if screenshot_path != "":
 		_take_screenshot()
 
