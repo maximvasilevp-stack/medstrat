@@ -47,6 +47,10 @@ signal emission
 signal policy_changed(good: String, policy: String)
 signal buy_goods(good: String, amount: int)
 signal sell_goods(good: String, amount: int)
+signal invest(amount: int)
+signal divest(amount: int)
+signal tariff_changed(level: int)
+signal sanction(target: int, on: bool)
 signal exit_pressed
 signal attack_size_changed(ratio: float)
 signal cancel_attack(target: int)
@@ -153,6 +157,10 @@ var econ_debt: Label
 var econ_buttons: Dictionary = {}
 var econ_rows: Dictionary = {}
 var _econ_syncing := false
+var econ_people: Label
+var econ_budget: Label
+var econ_index: Label
+var tariff_buttons: Array = []
 var gov_tab_index := 0
 var _tax_syncing := false
 var overlay: Control
@@ -1125,6 +1133,72 @@ func _build_gov_panel() -> void:
 	emit_b.pressed.connect(func(): emission.emit())
 	debt_row.add_child(emit_b)
 	econ_buttons["emission"] = emit_b
+
+	# --- people, budget, market, trade policy (sections inserted above the goods)
+	var sec_people := _label("НАСЕЛЕНИЕ И ТРУД", 13)
+	econ.add_child(sec_people)
+	econ.move_child(sec_people, 3)
+	econ_people = _label("", 11, ThemeFactory.TEXT_DIM)
+	econ.add_child(econ_people)
+	econ.move_child(econ_people, 4)
+	var sec_budget := _label("ГОСБЮДЖЕТ", 13)
+	econ.add_child(sec_budget)
+	econ.move_child(sec_budget, 5)
+	econ_budget = _label("", 11, ThemeFactory.TEXT_DIM)
+	econ.add_child(econ_budget)
+	econ.move_child(econ_budget, 6)
+	var sec_money := _label("ДЕНЬГИ, КУРС И ДОЛГ", 13)
+	econ.add_child(sec_money)
+	econ.move_child(sec_money, 7)
+	var sec_market := _label("БИРЖА", 13)
+	econ.add_child(sec_market)
+	econ_index = _label("", 11, ThemeFactory.TEXT_DIM)
+	econ.add_child(econ_index)
+	var market_row := HFlowContainer.new()
+	market_row.add_theme_constant_override("h_separation", 6)
+	market_row.add_theme_constant_override("v_separation", 6)
+	econ.add_child(market_row)
+	for amount in [1000, 5000, 20000]:
+		var b := Button.new()
+		b.text = "Вложить " + Names.short_number(amount)
+		b.custom_minimum_size = Vector2(0, 34)
+		var am: int = amount
+		b.pressed.connect(func(): invest.emit(am))
+		market_row.add_child(b)
+		econ_buttons["invest_%d" % amount] = b
+	var sell_half := Button.new()
+	sell_half.text = "Продать половину"
+	sell_half.custom_minimum_size = Vector2(0, 34)
+	sell_half.pressed.connect(func(): divest.emit(int(Economy.portfolio_value(world.factions[human]) / 2.0)))
+	market_row.add_child(sell_half)
+	econ_buttons["divest_half"] = sell_half
+	var sell_all := Button.new()
+	sell_all.text = "Продать всё"
+	sell_all.custom_minimum_size = Vector2(0, 34)
+	sell_all.pressed.connect(func(): divest.emit(int(Economy.portfolio_value(world.factions[human])) + 1))
+	market_row.add_child(sell_all)
+	econ_buttons["divest_all"] = sell_all
+	var sec_trade := _label("ТОРГОВАЯ ПОЛИТИКА", 13)
+	econ.add_child(sec_trade)
+	var tariff_row := HFlowContainer.new()
+	tariff_row.add_theme_constant_override("h_separation", 6)
+	tariff_row.add_theme_constant_override("v_separation", 6)
+	econ.add_child(tariff_row)
+	tariff_row.add_child(_label("Пошлины на импорт:", 13))
+	var tgroup := ButtonGroup.new()
+	for i in Economy.TARIFF_LEVELS.size():
+		var b := Button.new()
+		b.text = "%d%%" % int(Economy.TARIFF_LEVELS[i] * 100.0)
+		b.toggle_mode = true
+		b.button_group = tgroup
+		b.custom_minimum_size = Vector2(52, 34)
+		var lv := i
+		b.pressed.connect(func(): tariff_changed.emit(lv))
+		tariff_row.add_child(b)
+		tariff_buttons.append(b)
+	econ.add_child(_label("Пошлины наполняют казну и защищают своих производителей (+30% выпуска еды и материалов при 30%), но импорт дороже, а соседи любят вас меньше. Санкции против отдельных стран — во вкладке Дипломатия.", 11, ThemeFactory.TEXT_DIM))
+	var sec_goods := _label("ТОВАРЫ", 13)
+	econ.add_child(sec_goods)
 	for good in Economy.GOOD_ORDER:
 		var gd: Dictionary = Economy.GOODS[good]
 		var stack := VBoxContainer.new()
@@ -1192,7 +1266,7 @@ func _build_gov_panel() -> void:
 	grid.add_theme_constant_override("h_separation", 8)
 	grid.add_theme_constant_override("v_separation", 8)
 	stats.add_child(grid)
-	for key in ["gold", "troops", "cells", "approval", "gdp", "inflation"]:
+	for key in ["gold", "troops", "cells", "approval", "gdp", "inflation", "pop", "index"]:
 		var c = Charts.LineChart.new()
 		c.custom_minimum_size = Vector2(150 if mobile else 420, 120 if mobile else 160)
 		grid.add_child(c)
@@ -1404,12 +1478,36 @@ func _refresh_gov() -> void:
 		10:
 			var e: Dictionary = f["econ"]
 			var limit: float = Economy.credit_limit(world, human)
-			econ_summary.text = "ВВП %s/с · инфляция %.1f%% в минуту · уровень цен ×%.2f · торговля товарами %+.0f/с" % [Names.short_number(e["gdp"]), float(e["inflation"]), float(e["price_level"]), float(e["trade_gold"])]
+			econ_summary.text = "ВВП %s/с · инфляция %.1f%% в минуту · уровень цен ×%.2f · курс валюты %.2f · рейтинг %s · торговля товарами %+.0f/с" % [Names.short_number(e["gdp"]), float(e["inflation"]), float(e["price_level"]), Economy.exchange_rate(world, human), Economy.rating(world, human), float(e["trade_gold"])]
 			var cyc: Dictionary = Economy.cycle(world)
 			econ_cycle.text = "Мировой рынок: %s — %s" % [cyc["name"], cyc["desc"]]
 			econ_rate.text = "%d%%" % int(e["rate"])
 			var debt: float = float(e["debt"])
-			econ_debt.text = "Долг %s из лимита %s · проценты %.1f/с%s" % [Names.short_number(debt), Names.short_number(limit), Economy.interest_per_sec(f), " · ДЕФОЛТ" if e["defaulted"] else ""]
+			econ_debt.text = "Долг %s из лимита %s · ставка по кредиту %.1f%% в минуту · проценты %.1f/с%s" % [Names.short_number(debt), Names.short_number(limit), Economy.loan_rate(world, human), Economy.interest_per_sec(world, human), " · ДЕФОЛТ" if e["defaulted"] else ""]
+			var pop: int = world.population_of(human)
+			var jobs: Dictionary = e["jobs"]
+			econ_people.text = "Население %s (%+.1f/с: рождаемость +%.1f, смертность −%.1f, миграция %+.1f) · рабочих мест %s: село %s, промышленность %s, услуги %s · безработица %.1f%% · зарплата ×%.2f · производительность ×%.2f" % [
+				Names.short_number(pop), float(e["births"]) - float(e["deaths"]) + float(e["migration"]), float(e["births"]), float(e["deaths"]), float(e["migration"]),
+				Names.short_number(float(jobs.get("agri", 0.0)) + float(jobs.get("industry", 0.0)) + float(jobs.get("services", 0.0))), Names.short_number(float(jobs.get("agri", 0.0))), Names.short_number(float(jobs.get("industry", 0.0))), Names.short_number(float(jobs.get("services", 0.0))),
+				float(e["unemployment"]) * 100.0, float(e["wage"]), Economy.productivity(world, human)]
+			var bd: Dictionary = Economy.budget(world, human)
+			var rev_parts: Array = []
+			for k in bd["revenue"]:
+				if float(bd["revenue"][k]) > 0.05:
+					rev_parts.append("%s %s" % [k, Names.short_number(bd["revenue"][k])])
+			var sp_parts: Array = []
+			for k in bd["spending"]:
+				if float(bd["spending"][k]) > 0.05:
+					sp_parts.append("%s %s" % [k, Names.short_number(bd["spending"][k])])
+			econ_budget.text = "Доходы %s/с (%s) · расходы %s/с (%s) · сальдо %+.1f/с%s" % [Names.short_number(bd["total_revenue"]), ", ".join(rev_parts) if not rev_parts.is_empty() else "—", Names.short_number(bd["total_spending"]), ", ".join(sp_parts) if not sp_parts.is_empty() else "—", bd["balance"], " · дефицит разгоняет инфляцию" if bd["balance"] < 0.0 else ""]
+			var pv: float = Economy.portfolio_value(f)
+			econ_index.text = "Индекс %s: %.1f · ваш портфель %s (вложено %s) · растёт с ВВП и одобрением, падает от войн и рецессий" % [f["name"], float(e["index"]), Names.short_number(pv), Names.short_number(e["invested"])]
+			for amount in [1000, 5000, 20000]:
+				econ_buttons["invest_%d" % amount].disabled = f["gold"] < amount
+			econ_buttons["divest_half"].disabled = pv < 2.0
+			econ_buttons["divest_all"].disabled = pv < 1.0
+			for i in tariff_buttons.size():
+				tariff_buttons[i].button_pressed = i == int(e["tariff"])
 			econ_debt.add_theme_color_override("font_color", ThemeFactory.RED if e["defaulted"] else ThemeFactory.TEXT)
 			for amount in Economy.LOAN_STEPS:
 				econ_buttons["loan_%d" % amount].disabled = e["defaulted"] or debt + amount > limit
@@ -1428,7 +1526,7 @@ func _refresh_gov() -> void:
 				var short: bool = e["shortage"][good]
 				r["name"].text = Economy.GOODS[good]["name"] + (" · ДЕФИЦИТ" if short else "")
 				r["name"].add_theme_color_override("font_color", ThemeFactory.RED if short else ThemeFactory.TEXT)
-				r["stats"].text = "склад %d · производство +%.1f/с · потребление −%.1f/с · мировая цена %.1f" % [int(stock), prod, cons, p]
+				r["stats"].text = "склад %d · производство +%.1f/с · потребление −%.1f/с · мировая цена %.1f (в вашей валюте %.1f)" % [int(stock), prod, cons, p, Economy.local_price(world, human, good)]
 				r["bar"].value = clampf(stock / Economy.STOCK_CAP, 0.0, 1.0)
 				r["policy"].select(Economy.POLICY_ORDER.find(e["policy"][good]))
 				r["buy"].text = "Купить 100 · " + Names.short_number(100.0 * p)
@@ -1438,8 +1536,8 @@ func _refresh_gov() -> void:
 			_econ_syncing = false
 		11:
 			var h: Dictionary = f["history"]
-			var titles := {"gold": "Золото", "troops": "Армия", "cells": "Земля (клетки)", "approval": "Одобрение, %", "gdp": "ВВП в секунду", "inflation": "Инфляция, % в минуту"}
-			var colors := {"gold": Color("#D9731F"), "troops": ThemeFactory.PEACH.darkened(0.15), "cells": ThemeFactory.LIME.darkened(0.2), "approval": ThemeFactory.SKY.darkened(0.15), "gdp": ThemeFactory.LAVENDER.darkened(0.25), "inflation": ThemeFactory.RED}
+			var titles := {"gold": "Золото", "troops": "Армия", "cells": "Земля (клетки)", "approval": "Одобрение, %", "gdp": "ВВП в секунду", "inflation": "Инфляция, % в минуту", "pop": "Население", "index": "Биржевой индекс"}
+			var colors := {"gold": Color("#D9731F"), "troops": ThemeFactory.PEACH.darkened(0.15), "cells": ThemeFactory.LIME.darkened(0.2), "approval": ThemeFactory.SKY.darkened(0.15), "gdp": ThemeFactory.LAVENDER.darkened(0.25), "inflation": ThemeFactory.RED, "pop": ThemeFactory.LIME.darkened(0.35), "index": ThemeFactory.SKY.darkened(0.3)}
 			for key in stat_charts:
 				stat_charts[key].set_data(titles[key], [{"values": h[key], "color": colors[key], "label": "за матч, шаг 5 с"}])
 			var bars: Array = []
@@ -1906,7 +2004,7 @@ func _build_diplo_rows() -> void:
 		stack.add_child(line)
 		var buttons := {}
 		var tid := id
-		for pair in [["gift", "Подарок"], ["pact", "Пакт"], ["trade", "Торговля"], ["alliance", "Союз"], ["vassal", "Вассал"]]:
+		for pair in [["gift", "Подарок"], ["pact", "Пакт"], ["trade", "Торговля"], ["alliance", "Союз"], ["vassal", "Вассал"], ["sanction", "Санкции"]]:
 			var b := Button.new()
 			b.text = pair[1]
 			b.custom_minimum_size = Vector2(0, 32)
@@ -1931,6 +2029,8 @@ func _diplo_action(act: String, tid: int) -> void:
 			alliance.emit(tid)
 		"vassal":
 			vassalize.emit(tid)
+		"sanction":
+			sanction.emit(tid, not bool(world.factions[human]["sanctions"].get(tid, false)))
 
 
 func _refresh_diplomacy(f: Dictionary) -> void:
@@ -1965,6 +2065,8 @@ func _refresh_diplomacy(f: Dictionary) -> void:
 			status = "вы нападаете"
 		if world.trade_active(human, id):
 			status += " · торговля"
+		if bool(f["sanctions"].get(id, false)):
+			status += " · под вашими санкциями"
 		r["name"].text = "%s · %s" % [o["name"], r["persona"]]
 		r["info"].text = "%.1f%% карты · %s войск · %s" % [world.land_share(id) * 100.0, Names.short_number(o["troops"]), status]
 		r["rel"].text = "отношения %d" % int(rel)
@@ -1987,6 +2089,9 @@ func _refresh_diplomacy(f: Dictionary) -> void:
 		bt["vassal"].text = "Вассал"
 		bt["vassal"].disabled = o["overlord"] != 0 or f["cells"] < o["cells"] * Rules.VASSAL_RATIO
 		bt["vassal"].tooltip_text = "Платит вам %d%% дохода и не воюет с вами. Нужно в %d раза больше земли и отношения от %d (или ваша атака на него)" % [int(Rules.VASSAL_TRIBUTE * 100.0), int(Rules.VASSAL_RATIO), int(Rules.VASSAL_MIN_RELATION)]
+		var sanctioned: bool = bool(f["sanctions"].get(id, false))
+		bt["sanction"].text = "Снять санкции" if sanctioned else "Санкции"
+		bt["sanction"].tooltip_text = "Его экспорт −30%%, импорт +30%%, отношения −%d, торговый договор рвётся" % int(Economy.SANCTION_RELATION)
 
 
 func _build_spy_rows(page: VBoxContainer) -> void:
@@ -2153,8 +2258,14 @@ func refresh(delta: float) -> void:
 		var goal: float = Rules.WIN_LAND_SHARE * 100.0
 		if f["alive"]:
 			var share: float = world.land_share(human) * 100.0
-			timer_bar.value = clampf(share / goal, 0.0, 1.0)
-			timer_label.text = "Цель: %d%% карты · у вас %.1f%%" % [int(goal), share]
+			var lead_goal: float = Rules.WIN_LEAD_SHARE * 100.0
+			var lead_s: float = world.lead_seconds()
+			if lead_s > 0.0 and world.leader() == human:
+				timer_bar.value = clampf(lead_s / Rules.WIN_LEAD_SECONDS, 0.0, 1.0)
+				timer_label.text = "Вы бесспорный лидер: победа через %d с" % int(ceil(Rules.WIN_LEAD_SECONDS - lead_s))
+			else:
+				timer_bar.value = clampf(share / goal, 0.0, 1.0)
+				timer_label.text = "Победа: %d%% карты или %d%% и вдвое больше второго · у вас %.1f%%" % [int(goal), int(lead_goal), share]
 		else:
 			var lead: int = world.leader()
 			timer_bar.value = clampf(world.land_share(lead) * 100.0 / goal, 0.0, 1.0)

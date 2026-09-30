@@ -40,11 +40,15 @@ const LIST := {
 	"banker": {"name": "Банкир", "desc": "Возьмите кредит и полностью его погасите", "xp": 30},
 	"tycoon": {"name": "Спекулянт", "desc": "Заработайте 10 000 на ручной торговле товарами", "xp": 60},
 	"printer": {"name": "Печатный станок", "desc": "Проведите три эмиссии и не получите дефолт", "xp": 30},
+	"investor": {"name": "Инвестор", "desc": "Выведите с биржи 20 000 золота", "xp": 60},
+	"million": {"name": "Миллион граждан", "desc": "Население 1 000 000", "xp": 100},
+	"full_employment": {"name": "Полная занятость", "desc": "Безработица ниже 3% при населении от 50 000", "xp": 40},
+	"aaa": {"name": "Рейтинг AAA", "desc": "Долг есть, а рейтинг всё ещё AAA", "xp": 30},
 }
 const ORDER := ["first_blood", "hundred", "thousand", "ten_thousand", "quarter", "winner", "city_builder", "admiral", "nuclear", "mega",
 	"pacifist", "lawmaker", "codex", "cabinet", "scholar", "beloved", "tyrant", "reelected", "diplomat", "ally", "overlord", "merchant",
 	"spymaster", "reformer", "builder", "prospector", "conqueror", "survivor", "marathon", "rich", "horde", "missions10", "all_seasons", "nightmare",
-	"economist", "banker", "tycoon", "printer"]
+	"economist", "banker", "tycoon", "printer", "investor", "million", "full_employment", "aaa"]
 
 
 static func _count_true(d: Dictionary) -> int:
@@ -146,6 +150,14 @@ static func met(world, fid: int, key: String) -> bool:
 			return float(f["econ"]["manual_profit"]) >= 10000.0
 		"printer":
 			return int(c.get("emissions", 0)) >= 3 and not f["econ"]["defaulted"]
+		"investor":
+			return int(c.get("market_gold", 0)) >= 20000
+		"million":
+			return world.population_of(fid) >= 1000000
+		"full_employment":
+			return world.population_of(fid) >= 50000 and float(f["econ"]["unemployment"]) < 0.03
+		"aaa":
+			return float(f["econ"]["debt"]) > 0.0 and f["econ"]["defaulted"] == false and float(f["econ"]["debt"]) / maxf(1.0, float(f["econ"]["gdp"]) * 60.0) < 0.2
 	return false
 
 

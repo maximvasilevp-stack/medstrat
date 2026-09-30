@@ -168,6 +168,10 @@ func _ready() -> void:
 	hud.policy_changed.connect(func(g, p): world.apply({"type": "policy", "player": human, "good": g, "policy": p}))
 	hud.buy_goods.connect(func(g, a): world.apply({"type": "buy", "player": human, "good": g, "amount": a}))
 	hud.sell_goods.connect(func(g, a): world.apply({"type": "sell", "player": human, "good": g, "amount": a}))
+	hud.invest.connect(func(a): world.apply({"type": "invest", "player": human, "amount": a}))
+	hud.divest.connect(func(a): world.apply({"type": "divest", "player": human, "amount": a}))
+	hud.tariff_changed.connect(func(l): world.apply({"type": "tariff", "player": human, "level": l}))
+	hud.sanction.connect(func(t, on): world.apply({"type": "sanction", "player": human, "target": t, "on": on}))
 	world.economy_event.connect(func(fid, text):
 		if fid == human:
 			hud.toast(text, Color(1, 0.85, 0.35))
@@ -684,7 +688,7 @@ func _on_match_finished(winner: int) -> void:
 		lines.append("%d. %s — %.1f%%" % [i + 1, f["name"], world.land_share(f["id"]) * 100.0])
 	var won: bool = winner == human
 	var title := "Победа!" if won else "Матч окончен"
-	var goal := "%s занял %d%% карты." % [world.factions[winner]["name"], int(Rules.WIN_LAND_SHARE * 100.0)]
+	var goal := "%s: %s" % [world.factions[winner]["name"], ("%d%% карты" % int(Rules.WIN_LAND_SHARE * 100.0)) if world.land_share(winner) >= Rules.WIN_LAND_SHARE else "бесспорный лидер целую минуту"]
 	_sfx("win" if won else "lose")
 	var bonus := _count_result(won)
 	hud.show_result(title, goal + "\n" + "\n".join(lines) + "\n\nВаше место: #%d\n%s" % [world.rank_of(human), bonus], true, "Продолжить завоевание" if won else "Играть дальше")

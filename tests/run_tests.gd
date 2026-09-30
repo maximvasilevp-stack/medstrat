@@ -46,6 +46,8 @@ func _init() -> void:
 	test_missions_autopilot()
 	test_save_load()
 	test_economy()
+	test_economy_two()
+	test_victory_lead()
 	test_ranking_and_names()
 	test_determinism()
 	test_soak()
@@ -941,7 +943,7 @@ func test_economy() -> void:
 	var gold1: float = f["gold"]
 	for i in 3 * Rules.TICKS_PER_SEC:
 		w.step()
-	check(Economy.interest_per_sec(f) > 0.0 and w.gold_rate_of(1) < w.gross_income(1), "interest is paid every second")
+	check(Economy.interest_per_sec(w, 1) > 0.0 and w.gold_rate_of(1) < w.gross_income(1), "interest is paid every second")
 	check(w.apply({"type": "repay", "player": 1, "amount": 5000})["ok"] and float(e["debt"]) == 0.0 and int(f["counters"]["loans_repaid"]) == 1, "loan repaid")
 	# emission and inflation
 	f["gold"] = 1000.0
@@ -975,6 +977,98 @@ func test_economy() -> void:
 	var Save = preload("res://scripts/sim/save.gd")
 	var w2 = Save.from_dict(map, Save.to_dict(w))
 	check(is_equal_approx(Economy.price(w2, "food"), Economy.price(w, "food")) and is_equal_approx(float(w2.factions[1]["econ"]["price_level"]), float(e["price_level"])), "market and economy survive a save")
+
+
+func test_economy_two() -> void:
+	var Economy = preload("res://scripts/sim/economy.gd")
+	var w = _quiet(96)
+	var f: Dictionary = w.factions[1]
+	var e: Dictionary = f["econ"]
+	for i in 3 * Rules.TICKS_PER_SEC:
+		w.step()
+	# people
+	check(float(e["pop"]) > 0.0 and w.population_of(1) == int(e["pop"]), "population is a real stock")
+	check(float(e["births"]) > 0.0 and float(e["deaths"]) > 0.0 and float(e["employed"]) > 0.0, "births, deaths and jobs are computed")
+	check(float(e["unemployment"]) >= 0.0 and float(e["unemployment"]) <= 1.0 and float(e["wage"]) >= Economy.WAGE_MIN, "unemployment and wages are sane")
+	var pop0: float = float(e["pop"])
+	f["approval"] = 95.0
+	for i in 20 * Rules.TICKS_PER_SEC:
+		w.step()
+	check(float(e["pop"]) > pop0, "happy fed people multiply and immigrate")
+	var cap := Economy.capacity(w, 1)
+	e["pop"] = cap * 2.0
+	for i in Rules.TICKS_PER_SEC:
+		w.step()
+	check(float(e["pop"]) <= cap, "population is capped by land and cities")
+	e["unemployment"] = 0.0
+	f["mods_dirty"] = true
+	var ap0: float = w.mod(1, "approval")
+	e["unemployment"] = 0.5
+	f["mods_dirty"] = true
+	check(w.mod(1, "approval") < ap0 - 10.0, "mass unemployment angers the people")
+	e["unemployment"] = 0.0
+	f["mods_dirty"] = true
+	# income tax follows wages and the tax level
+	f["tax"] = 3
+	check(Economy.income_tax(f) > Economy.income_tax({"econ": e, "tax": 1}), "income tax grows with the tax level")
+	check(w.income_breakdown(1).has("Подоходный") and w.income_breakdown(1).has("Пошлины"), "budget lists income tax and duties")
+	var b: Dictionary = Economy.budget(w, 1)
+	check(b["total_revenue"] > 0.0 and absf(b["balance"] - (b["total_revenue"] - b["total_spending"])) < 1e-6, "budget balance is revenue minus spending")
+	# rating and exchange rate
+	check(Economy.rating(w, 1) == "AAA" and Economy.exchange_rate(w, 1) > 0.5, "no debt means AAA and a normal exchange rate")
+	e["debt"] = float(e["gdp"]) * 60.0 * 1.2
+	check(Economy.rating_index(w, 1) >= 3 and Economy.loan_rate(w, 1) > Economy.LOAN_INTEREST_BASE + 3.0, "heavy debt lowers the rating and raises the loan rate")
+	e["debt"] = 0.0
+	e["price_level"] = 2.0
+	w.market["avg_price_level"] = 1.0
+	check(absf(Economy.exchange_rate(w, 1) - 0.5) < 1e-6 and absf(Economy.local_price(w, 1, "food") - Economy.price(w, "food") * 2.0) < 1e-6, "inflation weakens the currency and doubles local prices")
+	e["price_level"] = 1.0
+	# stock market
+	f["gold"] = 10000.0
+	check(w.apply({"type": "invest", "player": 1, "amount": 4000})["ok"] and float(e["shares"]) > 0.0 and is_equal_approx(f["gold"], 6000.0), "investing buys shares")
+	check(absf(Economy.portfolio_value(f) - 4000.0) < 1e-3, "portfolio is worth what was invested at the same index")
+	e["index"] = float(e["index"]) * 1.5
+	check(w.apply({"type": "divest", "player": 1, "amount": 100000})["ok"] and f["gold"] > 11900.0 and float(e["shares"]) < 1e-6, "selling after a rally brings profit")
+	check(not w.apply({"type": "divest", "player": 1, "amount": 100})["ok"], "nothing to sell twice")
+	var idx0: float = float(e["index"])
+	for i in 30 * Rules.TICKS_PER_SEC:
+		w.step()
+	check(float(e["index"]) != idx0 and float(e["index"]) >= Economy.INDEX_MIN, "the index moves every second")
+	# tariffs and sanctions
+	var bot := _first_bot(w, 0)
+	var rel0: float = w.relation_of(bot, 1)
+	check(w.apply({"type": "tariff", "player": 1, "level": 3})["ok"] and int(e["tariff"]) == 3 and w.relation_of(bot, 1) < rel0, "tariffs anger trade partners")
+	e["stock"]["fuel"] = 0.0
+	var prod: Dictionary = Economy.production(w, 1)
+	check(prod["food"] > 0.0, "production still works with tariffs")
+	w.apply({"type": "tariff", "player": 1, "level": 0})
+	check(not Economy.is_sanctioned(w, bot), "nobody is sanctioned at start")
+	check(w.apply({"type": "sanction", "player": 1, "target": bot, "on": true})["ok"] and Economy.is_sanctioned(w, bot) and w.relation_of(bot, 1) < rel0, "sanctions hit relations and mark the target")
+	check(not w.apply({"type": "sanction", "player": 1, "target": bot, "on": true})["ok"], "double sanction rejected")
+	check(w.apply({"type": "sanction", "player": 1, "target": bot, "on": false})["ok"] and not Economy.is_sanctioned(w, bot), "sanctions lifted")
+	check(f["history"].has("pop") and f["history"].has("index"), "history tracks population and the index")
+	var Save = preload("res://scripts/sim/save.gd")
+	var w2 = Save.from_dict(map, Save.to_dict(w))
+	check(is_equal_approx(float(w2.factions[1]["econ"]["pop"]), float(e["pop"])) and w2.market.has("avg_price_level"), "people and market survive a save")
+
+
+func test_victory_lead() -> void:
+	var w = _quiet(97)
+	var f: Dictionary = w.factions[1]
+	var cells0: int = f["cells"]
+	var second := 0
+	for id in range(2, w.factions.size()):
+		if w.factions[id]["kind"] == w.Kind.BOT:
+			second = maxi(second, int(w.factions[id]["cells"]))
+	f["cells"] = maxi(int(map.land_total * Rules.WIN_LEAD_SHARE) + 1, int(second * Rules.WIN_LEAD_RATIO) + 1)
+	w.tick += 2000
+	w._check_victory()
+	check(w.phase == w.Phase.PLAY and w.lead_seconds() == 0.0, "an undisputed lead does not win instantly")
+	w.lead_since = w.tick - Rules.WIN_LEAD_SECONDS * Rules.TICKS_PER_SEC - 1
+	w._check_victory()
+	check(w.phase == w.Phase.FINISHED and w.winner_declared == 1, "a minute of undisputed lead wins the match")
+	w.resume()
+	f["cells"] = cells0
 
 
 func test_ranking_and_names() -> void:

@@ -33,6 +33,9 @@ extends RefCounted
 ##   {type="emission", player}                                     print money: gold now, inflation later
 ##   {type="policy", player, good, policy}                         trade policy for a good (Economy.POLICIES)
 ##   {type="buy", player, good, amount} / {type="sell", player, good, amount}
+##   {type="invest", player, amount} / {type="divest", player, amount}   the stock market
+##   {type="tariff", player, level}                                import duties 0..3
+##   {type="sanction", player, target, on}                         trade sanctions against a rival
 ##   {type="admin",  player, code}                               cheat code: infinite resources
 
 const Rules := preload("res://scripts/sim/rules.gd")
@@ -105,6 +108,7 @@ var dirty := false
 var heat_dirty := false
 var scorch_dirty := false
 var winner_declared: int = 0          # faction that already triggered match_finished (the match may go on)
+var lead_since: int = -1              # tick since the current leader has been undisputed
 var season: int = 0                   # index into Rules.SEASONS
 var difficulty: int = 1               # index into Rules.DIFFICULTIES
 var scenario: String = "free"        # key in Scenarios.LIST
@@ -189,11 +193,12 @@ func _new_faction(name: String, color: Color, kind: int) -> Dictionary:
 		"staff": {}, "seats": {}, "ruling": "", "agitation": {}, "bills": {}, "extra": {}, "budget": {},
 		"reforms": _default_reforms(), "projects": {}, "projects_done": {}, "relations": {}, "pacts": {},
 		"res": {}, "counters": {}, "trade": {}, "allies": {}, "vassals": {}, "overlord": 0, "persona": "",
-		"missions": [], "spy_cd": 0, "autopilot": {}, "econ": Economy.new_state(),
+		"missions": [], "spy_cd": 0, "autopilot": {}, "econ": Economy.new_state(), "sanctions": {},
 		"mods": {}, "mods_dirty": true,
 		"history": {"gold": PackedFloat32Array(), "troops": PackedFloat32Array(), "cells": PackedFloat32Array(),
 			"approval": PackedFloat32Array(), "income": PackedFloat32Array(), "gdp": PackedFloat32Array(),
-			"inflation": PackedFloat32Array(), "price_food": PackedFloat32Array()},
+			"inflation": PackedFloat32Array(), "price_food": PackedFloat32Array(), "pop": PackedFloat32Array(),
+			"index": PackedFloat32Array(), "unemployment": PackedFloat32Array()},
 		"alive": true, "border": {}, "spawn": -1,
 		"attack_size": Rules.DEFAULT_ATTACK_SIZE,
 	}
@@ -656,7 +661,8 @@ func record_history(fid: int) -> void:
 	var f: Dictionary = factions[fid]
 	var h: Dictionary = f["history"]
 	var samples := {"gold": f["gold"], "troops": f["troops"], "cells": float(f["cells"]), "approval": f["approval"], "income": gold_rate_of(fid),
-		"gdp": float(f["econ"]["gdp"]), "inflation": float(f["econ"]["inflation"]), "price_food": Economy.price(self, "food")}
+		"gdp": float(f["econ"]["gdp"]), "inflation": float(f["econ"]["inflation"]), "price_food": Economy.price(self, "food"),
+		"pop": float(population_of(fid)), "index": float(f["econ"]["index"]), "unemployment": float(f["econ"]["unemployment"]) * 100.0}
 	for key in samples:
 		var arr: PackedFloat32Array = h[key]
 		arr.append(samples[key])
@@ -676,10 +682,13 @@ func income_breakdown(fid: int) -> Dictionary:
 		"Постройки": mod(fid, "gold_flat"),
 		"Торговля": trade_income(fid),
 		"Дань": tribute_of(fid),
+		"Подоходный": Economy.income_tax(f) * mod(fid, "gold"),
 		"Товары": float(f["econ"]["trade_gold"]),
+		"Пошлины": float(f["econ"]["tariff_gold"]),
 		"Зарплаты": -salaries_of(fid),
 		"Бюджет": -budget_cost(fid),
-		"Проценты": -Economy.interest_per_sec(f),
+		"Пособия": -Economy.welfare_cost(f),
+		"Проценты": -Economy.interest_per_sec(self, fid),
 	}
 
 
@@ -715,6 +724,8 @@ func growth_of(fid: int) -> float:
 
 func population_of(fid: int) -> int:
 	var f: Dictionary = factions[fid]
+	if f["kind"] != Kind.CITY and float(f["econ"]["pop"]) >= 0.0:
+		return int(f["econ"]["pop"])
 	return f["cells"] * 10 + f["cities"] * 500
 
 
@@ -728,14 +739,14 @@ func gold_rate_of(fid: int) -> float:
 	rate = rate * mod(fid, "gold") + mod(fid, "gold_flat")
 	if f["kind"] == Kind.BOT:
 		rate *= Rules.DIFFICULTIES[difficulty]["bot_gold"]
-	rate += trade_income(fid) + tribute_of(fid)
-	return rate - salaries_of(fid) - budget_cost(fid) - Economy.interest_per_sec(f)
+	rate += trade_income(fid) + tribute_of(fid) + Economy.income_tax(f) * mod(fid, "gold")
+	return rate - salaries_of(fid) - budget_cost(fid) - Economy.interest_per_sec(self, fid) - Economy.welfare_cost(f)
 
 
-## Income before salaries, budget and interest (the base of the credit limit).
+## Income before salaries, budget, welfare and interest (the base of the credit limit).
 func gross_income(fid: int) -> float:
 	var f: Dictionary = factions[fid]
-	return gold_rate_of(fid) + salaries_of(fid) + budget_cost(fid) + Economy.interest_per_sec(f)
+	return gold_rate_of(fid) + salaries_of(fid) + budget_cost(fid) + Economy.interest_per_sec(self, fid) + Economy.welfare_cost(f)
 
 
 func grace_seconds() -> float:
@@ -1022,10 +1033,23 @@ func _check_victory() -> void:
 		var f: Dictionary = factions[id]
 		if f["kind"] != Kind.CITY and f["alive"]:
 			alive += 1
-	if land_share(lead) >= Rules.WIN_LAND_SHARE or (alive <= 1 and factions[lead]["alive"] and bots_enabled):
+	var undisputed := false
+	var r: Array = ranking()
+	if r.size() >= 2 and r[0]["id"] == lead and land_share(lead) >= Rules.WIN_LEAD_SHARE and r[0]["cells"] >= r[1]["cells"] * Rules.WIN_LEAD_RATIO:
+		if lead_since < 0:
+			lead_since = tick
+		undisputed = (tick - lead_since) * Rules.TICK_DT >= Rules.WIN_LEAD_SECONDS
+	else:
+		lead_since = -1
+	if land_share(lead) >= Rules.WIN_LAND_SHARE or undisputed or (alive <= 1 and factions[lead]["alive"] and bots_enabled):
 		winner_declared = lead
 		phase = Phase.FINISHED
 		match_finished.emit(lead)
+
+
+## Seconds the leader has been undisputed (0 when nobody is).
+func lead_seconds() -> float:
+	return 0.0 if lead_since < 0 else (tick - lead_since) * Rules.TICK_DT
 
 
 func _grow() -> void:
@@ -1981,6 +2005,49 @@ func _apply(a: Dictionary) -> String:
 			f["gold"] += gain
 			f["econ"]["stock"][good] = float(f["econ"]["stock"][good]) - amount
 			f["econ"]["manual_profit"] = float(f["econ"]["manual_profit"]) + gain
+			return ""
+		"invest":
+			var amount: float = minf(f["gold"], maxf(0.0, float(a["amount"])))
+			if amount < 1.0:
+				return "Не хватает золота"
+			var e: Dictionary = f["econ"]
+			f["gold"] -= amount
+			e["shares"] = float(e["shares"]) + amount / float(e["index"])
+			e["invested"] = float(e["invested"]) + amount
+			return ""
+		"divest":
+			var e: Dictionary = f["econ"]
+			var value := Economy.portfolio_value(f)
+			var amount: float = minf(value, maxf(0.0, float(a["amount"])))
+			if amount < 1.0:
+				return "На бирже у вас ничего нет"
+			var shares: float = amount / float(e["index"])
+			e["shares"] = maxf(0.0, float(e["shares"]) - shares)
+			f["gold"] += amount
+			e["invested"] = maxf(0.0, float(e["invested"]) - amount)
+			_count(fid, "market_gold", int(amount))
+			return ""
+		"tariff":
+			var level: int = clampi(int(a["level"]), 0, Economy.TARIFF_LEVELS.size() - 1)
+			f["econ"]["tariff"] = level
+			f["mods_dirty"] = true
+			return ""
+		"sanction":
+			var target: int = int(a["target"])
+			if target <= 0 or target >= factions.size() or target == fid or factions[target]["kind"] == Kind.CITY:
+				return "Нет такой страны"
+			var on: bool = bool(a["on"])
+			if on == bool(f["sanctions"].get(target, false)):
+				return "Уже так"
+			if on:
+				f["sanctions"][target] = true
+				var rel: Dictionary = factions[target]["relations"]
+				rel[fid] = maxf(0.0, float(rel.get(fid, Rules.RELATION_START)) - Economy.SANCTION_RELATION)
+				f["trade"].erase(target)
+				factions[target]["trade"].erase(fid)
+				_count(fid, "sanctions")
+			else:
+				f["sanctions"].erase(target)
 			return ""
 		"autopilot":
 			var task: String = a["task"]

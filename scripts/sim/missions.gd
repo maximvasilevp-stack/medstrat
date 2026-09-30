@@ -29,9 +29,10 @@ const TEMPLATES := {
 	"trade": {"name": "Купец", "text": "Заключите ещё %d торговых договора(ов)", "stat": "trades_made", "delta": [1, 2, 4], "gold": [2000, 4000, 7000], "xp": [15, 30, 50]},
 	"gdp": {"name": "Экономический рост", "text": "Поднимите ВВП до %d в секунду", "stat": "gdp", "mult": [1.4, 1.8, 2.5], "min": [150, 400, 900], "gold": [2500, 5000, 9000], "xp": [20, 40, 70]},
 	"stockpile": {"name": "Стратегический запас", "text": "Накопите %d единиц еды на складе", "stat": "food_stock", "abs": [200, 280, 300], "gold": [1500, 3000, 5000], "xp": [10, 20, 35]},
+	"population": {"name": "Демография", "text": "Доведите население до %d", "stat": "pop", "mult": [1.3, 1.6, 2.2], "min": [2000, 8000, 30000], "gold": [2000, 4500, 8000], "xp": [15, 35, 60]},
 }
 const TEMPLATE_ORDER := ["expand", "cities", "bills", "ministers", "techs", "approval", "troops", "gold", "buildings", "election",
-	"pact", "project", "resources", "eliminate", "land", "ports", "reform", "spy", "allies", "trade", "gdp", "stockpile"]
+	"pact", "project", "resources", "eliminate", "land", "ports", "reform", "spy", "allies", "trade", "gdp", "stockpile", "population"]
 const ACTIVE := 3
 
 
@@ -76,6 +77,8 @@ static func value(world, fid: int, stat: String) -> float:
 			return float(f["econ"]["gdp"])
 		"food_stock":
 			return float(f["econ"]["stock"]["food"])
+		"pop":
+			return float(world.population_of(fid))
 		_:
 			return float(f["counters"].get(stat, 0))
 

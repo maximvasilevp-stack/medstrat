@@ -3,7 +3,10 @@ extends RefCounted
 
 const TICKS_PER_SEC := 10
 const TICK_DT := 1.0 / TICKS_PER_SEC
-const WIN_LAND_SHARE := 0.5              # no clock: the match ends when someone holds this share of the land (or stands alone)
+const WIN_LAND_SHARE := 0.35             # no clock: the match ends when someone holds this share of the land (or stands alone)...
+const WIN_LEAD_SHARE := 0.2              # ...or holds this much and twice the land of the runner-up...
+const WIN_LEAD_RATIO := 2.0
+const WIN_LEAD_SECONDS := 60             # ...for this long (an undisputed leader)
 const SPAWN_SECONDS := 20                # time to pick a starting point before the human is placed automatically
 const HEAT_TICKS := 14                   # freshly captured cells glow for this many ticks
 const SEASON_SECONDS := 120              # spring, summer, autumn, winter, each this long
