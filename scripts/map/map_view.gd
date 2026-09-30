@@ -37,6 +37,7 @@ func _init(m, w) -> void:
 	mat.set_shader_parameter("owner_tex", owner_tex)
 	mat.set_shader_parameter("heat_tex", heat_tex)
 	mat.set_shader_parameter("scorch_tex", scorch_tex)
+	mat.set_shader_parameter("borders_tex", map.borders_texture)
 	mat.set_shader_parameter("palette", palette_tex)
 	mat.set_shader_parameter("map_size", Vector2i(map.width, map.height))
 	mat.set_shader_parameter("human_id", world.human)

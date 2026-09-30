@@ -33,6 +33,8 @@ func _init() -> void:
 	test_naval()
 	test_nuke()
 	test_buildings()
+	test_tech_and_new_buildings()
+	test_admin()
 	test_ranking_and_names()
 	test_determinism()
 	test_soak()
@@ -75,6 +77,16 @@ func test_map() -> void:
 	check(map.terrain.size() == map.size() and map.coast.size() == map.size(), "data sizes")
 	check(map.land_cells.size() == map.land_total, "land cell list matches land_total")
 	check(map.coast_cells.size() > 5000, "coast cell list (%d)" % map.coast_cells.size())
+	check(map.borders.size() == map.size(), "borders layer loaded")
+	check(map.cities.size() >= 100, "real cities loaded (%d)" % map.cities.size())
+	for c in map.cities:
+		check(map.is_land(c["cell"]), "city %s is on land" % c["name"])
+	var forest := 0
+	for i in range(0, map.size(), 97):
+		if map.terrain[i] == map.FOREST:
+			forest += 1
+			check(map.is_land(i), "forest is land")
+	check(forest > 100, "forests exist")
 	var rome: int = map.index(Vector2i(int((12.5 + 11.0) * cos(deg_to_rad(49.0)) / (44.0 / 768.0)), int((71.0 - 41.9) / (44.0 / 768.0))))
 	check(map.is_land(rome), "Rome is land")
 	check(not map.is_land(0) and map.is_sea(0), "top-left corner is sea")
@@ -103,6 +115,7 @@ func test_spawn_phase() -> void:
 			break
 	check(free != -1 and w.apply({"type": "spawn", "player": 1, "cell": free})["ok"], "spawn on free land accepted")
 	check(w.phase == w.Phase.PLAY and w.factions[1]["cells"] > 40, "match started with a starting blob")
+	check(is_equal_approx(w.factions[1]["gold"], float(Rules.START_GOLD - Rules.SPAWN_COST)), "spawning costs gold")
 	check(is_equal_approx(w.seconds(), 0.0), "match clock starts at zero")
 	var w2 = World.new(map, 4)
 	w2.bots_enabled = false
@@ -293,6 +306,9 @@ func test_nuke() -> void:
 	var troops0: float = w.factions[cs]["troops"]
 	var boom := {"n": 0}
 	w.nuke_detonated.connect(func(_c, _r): boom["n"] += 1)
+	check(not w.apply({"type": "nuke", "player": 1, "cell": center, "mega": false})["ok"], "nuke needs the nuclear technology")
+	f["tech"]["nuclear"] = 1
+	check(not w.apply({"type": "nuke", "player": 1, "cell": center, "mega": true})["ok"], "mega nuke needs rockets")
 	check(w.apply({"type": "nuke", "player": 1, "cell": center, "mega": false})["ok"], "nuke launched")
 	check(w.missiles.size() == 1 and is_equal_approx(f["gold"], 1000000.0 - Rules.NUKE_COST), "missile in flight, gold paid")
 	for i in Rules.NUKE_FLIGHT_TICKS:
@@ -337,6 +353,66 @@ func test_buildings() -> void:
 	w.building_removed.connect(func(_c): removed["n"] += 1)
 	w._set_owner(spawn, 0)
 	check(w.factions[1]["cities"] == 0 and removed["n"] == 1, "captured cell loses its building")
+
+
+func test_tech_and_new_buildings() -> void:
+	var w = _quiet(31)
+	var f: Dictionary = w.factions[1]
+	var spawn: int = f["spawn"]
+	f["gold"] = 0.0
+	check(not w.apply({"type": "research", "player": 1, "tech": "trade"})["ok"], "research needs gold")
+	check(not w.apply({"type": "research", "player": 1, "tech": "warp"})["ok"], "unknown tech rejected")
+	f["gold"] = 1000000.0
+	var gold0: float = w.gold_rate_of(1)
+	check(w.apply({"type": "research", "player": 1, "tech": "trade"})["ok"], "trade researched")
+	check(w.tech_level(1, "trade") == 1 and w.gold_rate_of(1) > gold0 * 1.2, "trade raises the gold rate")
+	check(is_equal_approx(f["gold"], 1000000.0 - Rules.TECHS["trade"]["costs"][0]), "research paid")
+	check(w.tech_cost(1, "trade") == Rules.TECHS["trade"]["costs"][1], "next level costs more")
+	var r: Dictionary = w.apply({"type": "research", "player": 1, "tech": "rockets"})
+	check(not r["ok"] and r["reason"].contains("Ядерная"), "rockets need the nuclear programme")
+	check(w.apply({"type": "research", "player": 1, "tech": "nuclear"})["ok"] and w.apply({"type": "research", "player": 1, "tech": "nuclear"})["reason"].begins_with("Уже"), "max level enforced")
+	var free := _empty_neighbour(w, 1)
+	var cost0: float = w.capture_cost(1, 0, free)
+	w.apply({"type": "research", "player": 1, "tech": "logistics"})
+	check(w.capture_cost(1, 0, free) < cost0, "logistics makes expansion cheaper")
+	var def0: float = w.capture_cost(2, 1, spawn)
+	w.apply({"type": "research", "player": 1, "tech": "fortification"})
+	check(w.capture_cost(2, 1, spawn) > def0, "fortification makes the player harder to take")
+	# new buildings
+	var rate0: float = w.gold_rate_of(1)
+	check(w.apply({"type": "build", "player": 1, "kind": "market", "cell": spawn})["ok"], "market built")
+	check(w.gold_rate_of(1) > rate0 + Rules.MARKET_GOLD * 0.99, "market adds gold")
+	var cap0: float = w.max_troops_of(1)
+	var cells: Array = f["border"].keys()
+	check(w.apply({"type": "build", "player": 1, "kind": "barracks", "cell": cells[0]})["ok"], "barracks built")
+	check(w.max_troops_of(1) >= cap0 + Rules.BARRACKS_CAP, "barracks raise the cap")
+	check(w.apply({"type": "build", "player": 1, "kind": "bunker", "cell": cells[1]})["ok"], "bunker built")
+	check(f["bunkers"] == 1 and w.bunker_near(spawn, 2) == 1, "bunker guards its surroundings")
+	# an enemy nuke on the bunker area is intercepted
+	var enemy := 2
+	w.factions[enemy]["gold"] = 1000000.0
+	w.factions[enemy]["tech"]["nuclear"] = 1
+	var hits := {"boom": 0, "shield": 0}
+	w.nuke_detonated.connect(func(_c, _r): hits["boom"] += 1)
+	w.nuke_intercepted.connect(func(_c, _by): hits["shield"] += 1)
+	var mine0: int = f["cells"]
+	check(w.apply({"type": "nuke", "player": enemy, "cell": spawn, "mega": false})["ok"], "enemy nuke launched")
+	for i in Rules.NUKE_FLIGHT_TICKS + 1:
+		w.step()
+	check(hits["shield"] == 1 and hits["boom"] == 0, "bunker intercepted the nuke")
+	check(f["cells"] == mine0, "no land lost to an intercepted nuke")
+
+
+func test_admin() -> void:
+	var w = _quiet(32)
+	var f: Dictionary = w.factions[1]
+	var r: Dictionary = w.apply({"type": "admin", "player": 1, "code": "123"})
+	check(not r["ok"] and not f["admin"], "wrong code rejected")
+	check(w.apply({"type": "admin", "player": 1, "code": "666"})["ok"] and f["admin"], "code 666 enables admin mode")
+	check(f["gold"] > 1e8 and f["troops"] >= 1e6, "admin has endless resources")
+	w.apply({"type": "build", "player": 1, "kind": "city", "cell": f["spawn"]})
+	w.step()
+	check(f["gold"] > 1e8, "gold refills every tick")
 
 
 func test_ranking_and_names() -> void:

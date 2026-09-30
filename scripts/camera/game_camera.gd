@@ -1,18 +1,23 @@
 extends Camera2D
-## Pixel-perfect strategy camera: integer zoom steps, drag / keyboard / edge panning, clamped to the map.
+## Strategy camera inside the map SubViewport: integer zoom steps, mouse wheel, trackpad pinch and
+## two-finger pan, drag with middle/right button, WASD/arrows, screen edges, +/- keys. Clamped to the map.
 
 signal right_clicked(screen_pos: Vector2)
+signal zoom_changed(level: int)
 
-const ZOOMS := [1, 2, 3, 4, 6]   # logical screen pixels per map cell
-const PAN_SPEED := 700.0          # logical pixels per second
-const EDGE := 6                   # edge-pan zone in logical pixels
+const ZOOMS := [1, 2, 3, 4, 6, 8]   # screen pixels per map cell
+const PAN_SPEED := 700.0            # pixels per second for keyboard / edge panning
+const EDGE := 6                     # edge-pan zone in pixels
 const CLICK_SLOP := 4.0
+const WHEEL_COOLDOWN := 0.08        # seconds between wheel zoom steps (trackpads send bursts)
 
 var map_size := Vector2(640, 768)
 var zoom_index := 1
 var dragging := false
 var drag_moved := 0.0
 var edge_pan_enabled := true
+var _magnify := 1.0
+var _wheel_timer := 0.0
 
 
 func _ready() -> void:
@@ -35,9 +40,11 @@ func _z() -> float:
 
 func _apply_zoom() -> void:
 	zoom = Vector2(_z(), _z())
+	zoom_changed.emit(zoom_index)
 
 
 func _process(delta: float) -> void:
+	_wheel_timer = maxf(0.0, _wheel_timer - delta)
 	var dir := Vector2.ZERO
 	if Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP):
 		dir.y -= 1
@@ -67,10 +74,11 @@ func _process(delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		if mb.pressed and mb.button_index == MOUSE_BUTTON_WHEEL_UP:
-			_zoom_at(1, get_viewport().get_mouse_position())
-		elif mb.pressed and mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			_zoom_at(-1, get_viewport().get_mouse_position())
+		if mb.pressed and (mb.button_index == MOUSE_BUTTON_WHEEL_UP or mb.button_index == MOUSE_BUTTON_WHEEL_DOWN):
+			if _wheel_timer <= 0.0:
+				_wheel_timer = WHEEL_COOLDOWN
+				_zoom_at(1 if mb.button_index == MOUSE_BUTTON_WHEEL_UP else -1, get_viewport().get_mouse_position())
+			get_viewport().set_input_as_handled()
 		elif mb.button_index == MOUSE_BUTTON_MIDDLE or mb.button_index == MOUSE_BUTTON_RIGHT:
 			if mb.pressed:
 				dragging = true
@@ -84,6 +92,43 @@ func _unhandled_input(event: InputEvent) -> void:
 		drag_moved += mm.relative.length()
 		position -= mm.relative / _z()
 		_clamp_and_snap()
+	elif event is InputEventMagnifyGesture:
+		var mg := event as InputEventMagnifyGesture
+		_magnify *= mg.factor
+		if _magnify >= 1.25:
+			_magnify = 1.0
+			_zoom_at(1, get_viewport().get_mouse_position())
+		elif _magnify <= 0.8:
+			_magnify = 1.0
+			_zoom_at(-1, get_viewport().get_mouse_position())
+		get_viewport().set_input_as_handled()
+	elif event is InputEventPanGesture:
+		var pg := event as InputEventPanGesture
+		if pg.ctrl_pressed or pg.meta_pressed:
+			_magnify *= 1.0 - pg.delta.y * 0.02
+			if _magnify >= 1.25:
+				_magnify = 1.0
+				_zoom_at(1, get_viewport().get_mouse_position())
+			elif _magnify <= 0.8:
+				_magnify = 1.0
+				_zoom_at(-1, get_viewport().get_mouse_position())
+		else:
+			position += pg.delta * 2.0 / _z()
+			_clamp_and_snap()
+		get_viewport().set_input_as_handled()
+	elif event is InputEventKey and event.pressed:
+		var k := event as InputEventKey
+		if k.physical_keycode == KEY_EQUAL or k.physical_keycode == KEY_KP_ADD or k.physical_keycode == KEY_PLUS:
+			zoom_step(1)
+			get_viewport().set_input_as_handled()
+		elif k.physical_keycode == KEY_MINUS or k.physical_keycode == KEY_KP_SUBTRACT:
+			zoom_step(-1)
+			get_viewport().set_input_as_handled()
+
+
+## Zoom around the centre of the view (buttons and keys).
+func zoom_step(step: int) -> void:
+	_zoom_at(step, get_viewport_rect().size / 2.0)
 
 
 func _zoom_at(step: int, screen_pos: Vector2) -> void:

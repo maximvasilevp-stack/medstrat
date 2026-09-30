@@ -87,6 +87,46 @@ const ROCKET := [
 	"..y.y..",
 ]
 
+const MARKET := [
+	".rrrrr.",
+	"rrrrrrr",
+	"tgtgtgt",
+	"ttttttt",
+	"tywtyyt",
+	"ttttttt",
+	"ddddddd",
+]
+
+const BARRACKS := [
+	"x.....x",
+	"xxxxxxx",
+	"xtttttx",
+	"xtwtwtx",
+	"xtttttx",
+	"xtwtwtx",
+	"ddddddd",
+]
+
+const BUNKER := [
+	"..iii..",
+	".iiiii.",
+	"iiibiii",
+	"iiiiiii",
+	"iikkkii",
+	"iiiiiii",
+	"ddddddd",
+]
+
+const LAB := [
+	"..bbb..",
+	".b...b.",
+	".b.y.b.",
+	".b...b.",
+	"..bbb..",
+	"..ttt..",
+	".ttttt.",
+]
+
 const ARMY := [
 	"iiiii",
 	"ixixi",

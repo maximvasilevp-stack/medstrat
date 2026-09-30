@@ -10,6 +10,8 @@ extends RefCounted
 ##   {type="cancel", player, target}                               call an attack off
 ##   {type="build",  player, kind: "city"|"port"|"defense", cell}
 ##   {type="nuke",   player, cell, mega: bool}
+##   {type="research", player, tech}                             buy the next level of a technology
+##   {type="admin",  player, code}                               cheat code: infinite resources
 
 const Rules := preload("res://scripts/sim/rules.gd")
 const Names := preload("res://scripts/sim/names.gd")
@@ -26,6 +28,9 @@ signal ship_launched(faction_id: int, from_cell: int, to_cell: int, ticks: int)
 signal ship_landed(faction_id: int, cell: int, success: bool)
 signal nuke_launched(faction_id: int, from_cell: int, to_cell: int, ticks: int, mega: bool)
 signal nuke_detonated(cell: int, radius: int)
+signal nuke_intercepted(cell: int, by: int)
+signal tech_researched(faction_id: int, tech: String, level: int)
+signal admin_enabled(faction_id: int)
 signal faction_eliminated(faction_id: int, by: int)
 signal action_rejected(action: Dictionary, reason: String)
 signal match_started
@@ -67,17 +72,41 @@ func _init(m, game_seed: int, human_name: String = "Вы") -> void:
 	scorch.resize(map.size())
 	var me := _new_faction(human_name, Color(0.93, 0.33, 0.33), Kind.HUMAN)
 	me["troops"] = float(Rules.START_TROOPS)
+	me["gold"] = float(Rules.START_GOLD)
 	var used := {}
-	for i in Rules.NUM_BOTS:
-		var f := _new_faction(Names.bot_name(rng, used), Color.from_hsv(fmod(0.11 + i * 0.618034, 1.0), 0.62, 0.86), Kind.BOT)
-		_spawn_blob(f, Rules.SPAWN_RADIUS, _find_spawn(Rules.SPAWN_RADIUS))
-		f["troops"] = float(Rules.START_TROOPS)
-	for i in Rules.NUM_CITY_STATES:
+	# real cities first: they are the neutral city-states
+	var cities: Array = map.cities.duplicate()
+	for i in range(cities.size() - 1, 0, -1):
+		var j := rng.randi_range(0, i)
+		var tmp = cities[i]
+		cities[i] = cities[j]
+		cities[j] = tmp
+	var placed := 0
+	for c in cities:
+		if placed >= Rules.NUM_CITY_STATES:
+			break
+		var size: int = c["size"]
+		var radius: int = Rules.CITY_STATE_RADIUS_MIN + size
+		var cell: int = c["cell"]
+		if owner[cell] != 0 or not _blob_ok(cell, radius, Rules.MIN_SPAWN_DISTANCE * 0.5):
+			continue
+		var f := _new_faction(c["name"], Color(0.60, 0.60, 0.62), Kind.CITY)
+		_spawn_blob(f, radius, cell)
+		f["troops"] = float(Rules.CITY_STATE_TROOPS_MIN + (Rules.CITY_STATE_TROOPS_MAX - Rules.CITY_STATE_TROOPS_MIN) * (size - 1) / 2 + rng.randi_range(-150, 150))
+		f["base_troops"] = f["troops"]
+		placed += 1
+	while placed < Rules.NUM_CITY_STATES:
 		var f := _new_faction(Names.city_name(rng, used), Color(0.60, 0.60, 0.62), Kind.CITY)
 		var radius := rng.randi_range(Rules.CITY_STATE_RADIUS_MIN, Rules.CITY_STATE_RADIUS_MAX)
 		_spawn_blob(f, radius, _find_spawn(radius))
 		f["troops"] = float(rng.randi_range(Rules.CITY_STATE_TROOPS_MIN, Rules.CITY_STATE_TROOPS_MAX))
 		f["base_troops"] = f["troops"]
+		placed += 1
+	for i in Rules.NUM_BOTS:
+		var f := _new_faction(Names.bot_name(rng, used), Color.from_hsv(fmod(0.11 + i * 0.618034, 1.0), 0.62, 0.86), Kind.BOT)
+		_spawn_blob(f, Rules.SPAWN_RADIUS, _find_spawn(Rules.SPAWN_RADIUS))
+		f["troops"] = float(Rules.START_TROOPS)
+		f["gold"] = float(Rules.BOT_START_GOLD)
 	dirty = true
 
 
@@ -98,7 +127,8 @@ func _new_faction(name: String, color: Color, kind: int) -> Dictionary:
 		"id": factions.size(), "name": name, "color": color, "kind": kind,
 		"troops": 0.0, "gold": 0.0, "base_troops": 0.0,
 		"cells": 0, "sum_x": 0.0, "sum_y": 0.0,
-		"cities": 0, "ports": 0, "defense": 0, "nukes": 0,
+		"cities": 0, "ports": 0, "defense": 0, "markets": 0, "barracks": 0, "bunkers": 0, "nukes": 0,
+		"tech": {}, "admin": false,
 		"alive": true, "border": {}, "spawn": -1,
 		"attack_size": Rules.DEFAULT_ATTACK_SIZE,
 	}
@@ -162,6 +192,7 @@ func spawn_human(cell: int) -> String:
 	if not _blob_ok(cell, Rules.SPAWN_RADIUS, Rules.MIN_SPAWN_DISTANCE * 0.6):
 		return "Слишком близко к чужим владениям или к краю карты"
 	_spawn_blob(factions[human], Rules.SPAWN_RADIUS, cell)
+	factions[human]["gold"] = maxf(0.0, factions[human]["gold"] - Rules.SPAWN_COST)
 	_start_match()
 	return ""
 
@@ -170,6 +201,7 @@ func auto_spawn_human() -> void:
 	if phase != Phase.SPAWN:
 		return
 	_spawn_blob(factions[human], Rules.SPAWN_RADIUS, _find_spawn(Rules.SPAWN_RADIUS))
+	factions[human]["gold"] = maxf(0.0, factions[human]["gold"] - Rules.SPAWN_COST)
 	_start_match()
 
 
@@ -235,6 +267,12 @@ func _remove_building(cell: int) -> void:
 			f["ports"] -= 1
 		"defense":
 			f["defense"] -= 1
+		"market":
+			f["markets"] -= 1
+		"barracks":
+			f["barracks"] -= 1
+		"bunker":
+			f["bunkers"] -= 1
 	buildings_at.erase(cell)
 	building_removed.emit(cell)
 
@@ -257,34 +295,60 @@ func centroid_cell(fid: int) -> int:
 
 # ------------------------------------------------------------------ queries
 
+func tech_level(fid: int, key: String) -> int:
+	return int(factions[fid]["tech"].get(key, 0))
+
+
+func tech_cost(fid: int, key: String) -> int:
+	var t: Dictionary = Rules.TECHS[key]
+	var level := tech_level(fid, key)
+	if level >= t["max"]:
+		return 0
+	return int(t["costs"][level])
+
+
 func max_troops_of(fid: int) -> float:
 	var f: Dictionary = factions[fid]
 	if f["kind"] == Kind.CITY:
 		return f["base_troops"] * Rules.CITY_STATE_MAX_MULT
-	return Rules.max_troops(f["cells"], f["cities"])
+	return Rules.max_troops(f["cells"], f["cities"]) + f["barracks"] * Rules.BARRACKS_CAP
 
 
 func growth_of(fid: int) -> float:
 	var f: Dictionary = factions[fid]
 	if f["kind"] == Kind.CITY:
 		return f["troops"] * Rules.CITY_STATE_INTEREST + 1.0
-	return Rules.growth_per_sec(f["troops"], f["cells"], f["cities"])
+	var extra: float = tech_level(fid, "conscription") * Rules.CONSCRIPTION_BONUS + f["barracks"] * Rules.BARRACKS_INTEREST
+	return Rules.growth_per_sec(f["troops"], f["cells"], f["cities"], extra)
 
 
 func gold_rate_of(fid: int) -> float:
 	var f: Dictionary = factions[fid]
-	return Rules.gold_per_sec(f["cells"], f["ports"])
+	var base := Rules.gold_per_sec(f["cells"], f["ports"])
+	return base * (1.0 + tech_level(fid, "trade") * Rules.TRADE_BONUS) + f["markets"] * Rules.MARKET_GOLD
 
 
 func capture_cost(attacker: int, target: int, cell: int) -> float:
 	var mult := Rules.terrain_mult(map.terrain[cell]) * Rules.empire_mult(factions[attacker]["cells"])
+	mult *= 1.0 - tech_level(attacker, "logistics") * Rules.LOGISTICS_BONUS
 	if scorched.has(cell):
 		mult *= Rules.SCORCH_COST_MULT
 	if target == 0:
 		return Rules.CAPTURE_COST_EMPTY * mult
 	var d: Dictionary = factions[target]
 	var density: float = d["troops"] / maxf(1.0, float(d["cells"]))
-	return (1.0 + density) * mult * (1.0 + d["defense"] * Rules.DEFENSE_BONUS)
+	var fort: float = 1.0 + d["defense"] * Rules.DEFENSE_BONUS + tech_level(target, "fortification") * Rules.FORTIFICATION_BONUS
+	return (1.0 + density) * mult * fort
+
+
+func bunker_near(cell: int, exclude: int) -> int:
+	var c := Vector2(map.cell(cell))
+	var r2 := float(Rules.BUNKER_RADIUS * Rules.BUNKER_RADIUS)
+	for b_cell in buildings_at:
+		var b: Dictionary = buildings_at[b_cell]
+		if b["kind"] == "bunker" and b["faction"] != exclude and Vector2(map.cell(b_cell)).distance_squared_to(c) <= r2:
+			return b["faction"]
+	return 0
 
 
 func land_share(fid: int) -> float:
@@ -414,6 +478,9 @@ func _grow() -> void:
 			f["troops"] = minf(cap, f["troops"] + growth_of(id) * Rules.TICK_DT)
 		if f["kind"] != Kind.CITY:
 			f["gold"] += gold_rate_of(id) * Rules.TICK_DT
+		if f["admin"]:
+			f["gold"] = 999999999.0
+			f["troops"] = maxf(f["troops"], 1000000.0)
 
 
 func _update_heat() -> void:
@@ -457,7 +524,7 @@ func _advance_attacks() -> void:
 		var queue: Array = a["queue"]
 		var queued: Dictionary = a["queued"]
 		var target_alive: bool = tgt == 0 or factions[tgt]["alive"]
-		var rate := Rules.attack_rate(a["troops"])
+		var rate := int(Rules.attack_rate(a["troops"]) * (1.0 + tech_level(att, "tactics") * Rules.TACTICS_BONUS))
 		var taken := 0
 		while taken < rate and a["head"] < queue.size() and a["troops"] > 0.0 and target_alive:
 			var head: int = a["head"]
@@ -524,6 +591,11 @@ func _advance_missiles() -> void:
 
 
 func _detonate(m: Dictionary) -> void:
+	var shield := bunker_near(m["cell"], m["player"])
+	if shield != 0:
+		_captured_now.append(m["cell"])
+		nuke_intercepted.emit(m["cell"], shield)
+		return
 	var radius: int = Rules.MEGA_NUKE_RADIUS if m["mega"] else Rules.NUKE_RADIUS
 	var center: Vector2i = map.cell(m["cell"])
 	var density := {}
@@ -609,10 +681,11 @@ func launch_attack(fid: int, target: int, ratio: float, cell: int = -1) -> Strin
 			return "У вас нет берега для отплытия"
 		else:
 			var dist := Vector2(map.cell(from)).distance_to(Vector2(map.cell(cell)))
-			if dist > Rules.NAVAL_REACH:
-				return "Слишком далеко для высадки"
+			var nav := 1.0 + tech_level(fid, "navigation") * Rules.NAVIGATION_BONUS
+			if dist > Rules.NAVAL_REACH * nav:
+				return "Слишком далеко для высадки (изучите Навигацию)"
 			f["troops"] -= amount
-			var ticks := maxi(5, int(dist / Rules.SHIP_SPEED))
+			var ticks := maxi(5, int(dist / (Rules.SHIP_SPEED * nav)))
 			ships.append({"attacker": fid, "target": target, "troops": amount, "cell": cell, "from": from, "ticks_left": ticks, "total": ticks})
 			ship_launched.emit(fid, from, cell, ticks)
 			return ""
@@ -645,6 +718,12 @@ func building_cost(kind: String, fid: int = 0) -> int:
 				owned = f["ports"]
 			"defense":
 				owned = f["defense"]
+			"market":
+				owned = f["markets"]
+			"barracks":
+				owned = f["barracks"]
+			"bunker":
+				owned = f["bunkers"]
 	match kind:
 		"city":
 			base = Rules.COST_CITY
@@ -652,6 +731,12 @@ func building_cost(kind: String, fid: int = 0) -> int:
 			base = Rules.COST_PORT
 		"defense":
 			base = Rules.COST_DEFENSE
+		"market":
+			base = Rules.COST_MARKET
+		"barracks":
+			base = Rules.COST_BARRACKS
+		"bunker":
+			base = Rules.COST_BUNKER
 		"nuke":
 			return Rules.NUKE_COST
 		"mega":
@@ -671,6 +756,14 @@ func _apply(a: Dictionary) -> String:
 	var f: Dictionary = factions[fid]
 	if a["type"] == "spawn":
 		return spawn_human(a["cell"])
+	if a["type"] == "admin":
+		if str(a.get("code", "")) != Rules.ADMIN_CODE:
+			return "Неверный код"
+		f["admin"] = true
+		f["gold"] = 999999999.0
+		f["troops"] = maxf(f["troops"], 1000000.0)
+		admin_enabled.emit(fid)
+		return ""
 	if phase == Phase.SPAWN:
 		return "Сначала выберите точку старта"
 	if not f["alive"]:
@@ -711,12 +804,22 @@ func _apply(a: Dictionary) -> String:
 					f["ports"] += 1
 				"defense":
 					f["defense"] += 1
+				"market":
+					f["markets"] += 1
+				"barracks":
+					f["barracks"] += 1
+				"bunker":
+					f["bunkers"] += 1
 			buildings_at[c] = {"faction": fid, "kind": kind}
 			building_placed.emit(fid, kind, c)
 			return ""
 		"nuke":
 			var c: int = a["cell"]
 			var mega: bool = a.get("mega", false)
+			if tech_level(fid, "nuclear") == 0:
+				return "Сначала изучите Ядерную программу (меню Развитие, клавиша T)"
+			if mega and tech_level(fid, "rockets") == 0:
+				return "MEGA NUKE требует технологию Ракеты"
 			if c < 0 or c >= owner.size() or not map.is_land(c):
 				return "Цель должна быть на суше"
 			var cost := building_cost("mega" if mega else "nuke", fid)
@@ -725,7 +828,26 @@ func _apply(a: Dictionary) -> String:
 			f["gold"] -= cost
 			f["nukes"] += 1
 			var from := centroid_cell(fid)
-			missiles.append({"player": fid, "cell": c, "from": from, "mega": mega, "ticks_left": Rules.NUKE_FLIGHT_TICKS})
-			nuke_launched.emit(fid, from, c, Rules.NUKE_FLIGHT_TICKS, mega)
+			@warning_ignore("integer_division")
+			var flight: int = Rules.NUKE_FLIGHT_TICKS / 2 if tech_level(fid, "rockets") > 0 else Rules.NUKE_FLIGHT_TICKS
+			missiles.append({"player": fid, "cell": c, "from": from, "mega": mega, "ticks_left": flight})
+			nuke_launched.emit(fid, from, c, flight, mega)
+			return ""
+		"research":
+			var key: String = a["tech"]
+			if not Rules.TECHS.has(key):
+				return "Неизвестная технология"
+			var t: Dictionary = Rules.TECHS[key]
+			var level := tech_level(fid, key)
+			if level >= t["max"]:
+				return "Уже изучено полностью"
+			if t["req"] != "" and tech_level(fid, t["req"]) == 0:
+				return "Сначала изучите: %s" % Rules.TECHS[t["req"]]["name"]
+			var cost := tech_cost(fid, key)
+			if f["gold"] < cost:
+				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
+			f["gold"] -= cost
+			f["tech"][key] = level + 1
+			tech_researched.emit(fid, key, level + 1)
 			return ""
 	return "Неизвестное действие"

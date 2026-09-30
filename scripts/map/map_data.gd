@@ -10,11 +10,17 @@ const MOUNTAIN := 5
 const RIVER := 6
 const LAKE := 7
 const VOID := 8
+const FOREST := 9
+const HILLS := 10
+const STEPPE := 11
 
 var width: int = 0
 var height: int = 0
 var terrain: PackedByteArray
 var coast: PackedByteArray          # 1 = playable land touching the sea
+var borders: PackedByteArray        # 1 = real country border (decoration)
+var borders_texture: ImageTexture
+var cities: Array = []              # [{name, cell, size}] real cities used as city-states
 var land_total: int = 0
 var land_cells: PackedInt32Array    # indices of all playable land cells
 var coast_cells: PackedInt32Array   # indices of playable land cells touching the sea
@@ -30,13 +36,17 @@ func _init(dir: String = "res://assets/map/") -> void:
 	land_total = int(meta["land_total"])
 	terrain = FileAccess.get_file_as_bytes(dir + "terrain.dat")
 	coast = FileAccess.get_file_as_bytes(dir + "coast.dat")
-	assert(terrain.size() == width * height and coast.size() == width * height, "map data size mismatch")
+	borders = FileAccess.get_file_as_bytes(dir + "borders.dat")
+	assert(terrain.size() == width * height and coast.size() == width * height and borders.size() == width * height, "map data size mismatch")
 	terrain_texture = ImageTexture.create_from_image(Image.create_from_data(width, height, false, Image.FORMAT_R8, terrain))
+	borders_texture = ImageTexture.create_from_image(Image.create_from_data(width, height, false, Image.FORMAT_R8, borders))
+	for c in meta.get("cities", []):
+		cities.append({"name": String(c["name"]), "cell": int(c["y"]) * width + int(c["x"]), "size": int(c["size"])})
 	var cells := PackedInt32Array()
 	var coasts := PackedInt32Array()
 	for i in width * height:
 		var t := terrain[i]
-		if t >= GRASS and t <= RIVER:
+		if (t >= GRASS and t <= RIVER) or t >= FOREST:
 			cells.append(i)
 			if coast[i] == 1:
 				coasts.append(i)
@@ -50,7 +60,7 @@ func size() -> int:
 
 func is_land(i: int) -> bool:
 	var t := terrain[i]
-	return t >= GRASS and t <= RIVER
+	return (t >= GRASS and t <= RIVER) or t >= FOREST
 
 
 func is_sea(i: int) -> bool:

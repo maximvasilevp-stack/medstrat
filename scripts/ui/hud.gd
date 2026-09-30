@@ -8,6 +8,9 @@ const Names := preload("res://scripts/sim/names.gd")
 const Rules := preload("res://scripts/sim/rules.gd")
 
 signal mode_selected(kind: String)      # "" = no placement / targeting mode
+signal research(tech: String)
+signal admin_code(code: String)
+signal zoom_requested(step: int)
 signal exit_pressed
 signal attack_size_changed(ratio: float)
 signal cancel_attack(target: int)
@@ -17,12 +20,16 @@ signal continue_requested
 signal restart_requested
 
 const CARDS := [
-	["defense", "ЗАЩИТА", PixelSprites.TOWER, "1"],
-	["city", "ГОРОД", PixelSprites.CITY, "2"],
-	["port", "ПОРТ", PixelSprites.PORT, "3"],
-	["nuke", "ЯДЕРНАЯ БОМБА", PixelSprites.ROCKET, "4"],
-	["mega", "MEGA NUKE", PixelSprites.ROCKET, "5"],
+	["defense", "ЗАЩИТА", PixelSprites.TOWER, "1", Color(0.35, 0.60, 0.92)],
+	["city", "ГОРОД", PixelSprites.CITY, "2", Color(0.95, 0.75, 0.30)],
+	["port", "ПОРТ", PixelSprites.PORT, "3", Color(0.95, 0.75, 0.30)],
+	["market", "РЫНОК", PixelSprites.MARKET, "4", Color(0.95, 0.75, 0.30)],
+	["barracks", "КАЗАРМЫ", PixelSprites.BARRACKS, "5", Color(0.90, 0.40, 0.35)],
+	["bunker", "БУНКЕР", PixelSprites.BUNKER, "6", Color(0.35, 0.60, 0.92)],
+	["nuke", "ЯД. БОМБА", PixelSprites.ROCKET, "7", Color(1.0, 0.55, 0.20)],
+	["mega", "MEGA NUKE", PixelSprites.ROCKET, "8", Color(1.0, 0.55, 0.20)],
 ]
+const CARD_SIZE := Vector2(92, 86)
 
 var world
 var human: int = 1
@@ -49,6 +56,11 @@ var attacks_box: VBoxContainer
 var tooltip: PanelContainer
 var tooltip_label: Label
 var sound_button: Button
+var tech_panel: PanelContainer
+var tech_rows: Dictionary = {}
+var tech_gold: Label
+var code_panel: PanelContainer
+var code_edit: LineEdit
 var overlay: Control
 var overlay_title: Label
 var overlay_body: Label
@@ -68,6 +80,9 @@ func _ready() -> void:
 	_build_cards()
 	_build_resources()
 	_build_attacks_panel()
+	_build_zoom_buttons()
+	_build_tech_panel()
+	_build_code_panel()
 	_build_tooltip()
 	_build_toast()
 	_build_overlay()
@@ -135,6 +150,15 @@ func _build_top() -> void:
 	sound_button.pressed.connect(func(): mute_toggled.emit())
 	row.add_child(sound_button)
 	set_muted(false)
+	var code_button := Button.new()
+	code_button.text = "Код"
+	code_button.custom_minimum_size = Vector2(70, 38)
+	code_button.tooltip_text = "Ввести админ-код"
+	code_button.pressed.connect(func():
+		code_panel.visible = not code_panel.visible
+		if code_panel.visible:
+			code_edit.grab_focus())
+	row.add_child(code_button)
 
 	timer_bar = _bar(Color(0.36, 0.78, 0.36), 12)
 	timer_bar.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
@@ -208,10 +232,20 @@ func _build_cards() -> void:
 		var b := Button.new()
 		b.toggle_mode = true
 		b.button_group = card_group
-		b.custom_minimum_size = Vector2(104, 84)
+		b.custom_minimum_size = CARD_SIZE
 		b.toggled.connect(_on_card_toggled.bind(kind))
+		var stripe := ColorRect.new()
+		stripe.color = d[4]
+		stripe.set_anchors_and_offsets_preset(PRESET_TOP_WIDE)
+		stripe.offset_left = 2
+		stripe.offset_right = -2
+		stripe.offset_top = 2
+		stripe.offset_bottom = 5
+		stripe.mouse_filter = MOUSE_FILTER_IGNORE
+		b.add_child(stripe)
 		var box := VBoxContainer.new()
 		box.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+		box.offset_top = 6
 		box.alignment = BoxContainer.ALIGNMENT_CENTER
 		box.mouse_filter = MOUSE_FILTER_IGNORE
 		box.add_theme_constant_override("separation", 1)
@@ -224,21 +258,38 @@ func _build_cards() -> void:
 		cost.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		box.add_child(cost)
 		var key := _label(d[3], 10, ThemeFactory.TEXT_DIM)
-		key.position = Vector2(6, 3)
+		key.position = Vector2(6, 7)
 		b.add_child(key)
 		bar.add_child(b)
 		cards[kind] = b
 		card_costs[kind] = cost
-	var plus := Button.new()
-	plus.disabled = true
-	plus.tooltip_text = "Новые постройки появятся позже"
-	plus.custom_minimum_size = Vector2(70, 84)
-	var pbox := CenterContainer.new()
-	pbox.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
-	pbox.mouse_filter = MOUSE_FILTER_IGNORE
-	plus.add_child(pbox)
-	pbox.add_child(_icon(PixelSprites.PLUS, "plus", Vector2(28, 28)))
-	bar.add_child(plus)
+	var tech := Button.new()
+	tech.custom_minimum_size = CARD_SIZE
+	tech.tooltip_text = "Клавиша T"
+	tech.pressed.connect(toggle_tech)
+	var tstripe := ColorRect.new()
+	tstripe.color = Color(0.70, 0.45, 0.95)
+	tstripe.set_anchors_and_offsets_preset(PRESET_TOP_WIDE)
+	tstripe.offset_left = 2
+	tstripe.offset_right = -2
+	tstripe.offset_top = 2
+	tstripe.offset_bottom = 5
+	tstripe.mouse_filter = MOUSE_FILTER_IGNORE
+	tech.add_child(tstripe)
+	var tbox := VBoxContainer.new()
+	tbox.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	tbox.offset_top = 6
+	tbox.alignment = BoxContainer.ALIGNMENT_CENTER
+	tbox.mouse_filter = MOUSE_FILTER_IGNORE
+	tech.add_child(tbox)
+	tbox.add_child(_icon(PixelSprites.LAB, "lab", Vector2(40, 28)))
+	var ttitle := _label("РАЗВИТИЕ", 10)
+	ttitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	tbox.add_child(ttitle)
+	var tkey := _label("T", 10, ThemeFactory.TEXT_DIM)
+	tkey.position = Vector2(6, 7)
+	tech.add_child(tkey)
+	bar.add_child(tech)
 
 	status_label = _label("", 13)
 	status_label.set_anchors_and_offsets_preset(PRESET_BOTTOM_WIDE)
@@ -337,6 +388,130 @@ func _build_attacks_panel() -> void:
 	attacks_panel.add_child(attacks_box)
 
 
+func _build_zoom_buttons() -> void:
+	var box := VBoxContainer.new()
+	box.set_anchors_and_offsets_preset(PRESET_BOTTOM_RIGHT)
+	box.offset_left = -84
+	box.offset_right = -44
+	box.offset_top = -224
+	box.offset_bottom = -140
+	box.add_theme_constant_override("separation", 4)
+	add_child(box)
+	for d in [["+", 1], ["−", -1]]:
+		var b := Button.new()
+		b.text = d[0]
+		b.custom_minimum_size = Vector2(40, 38)
+		b.add_theme_font_size_override("font_size", 20)
+		b.tooltip_text = "Зум: колесо, щипок на трекпаде, клавиши + и −"
+		var step: int = d[1]
+		b.pressed.connect(func(): zoom_requested.emit(step))
+		box.add_child(b)
+
+
+func _build_tech_panel() -> void:
+	tech_panel = PanelContainer.new()
+	tech_panel.set_anchors_and_offsets_preset(PRESET_CENTER)
+	tech_panel.offset_left = -330
+	tech_panel.offset_right = 330
+	tech_panel.offset_top = -250
+	tech_panel.offset_bottom = 250
+	tech_panel.visible = false
+	add_child(tech_panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	tech_panel.add_child(box)
+	var head := HBoxContainer.new()
+	box.add_child(head)
+	var title := _label("РАЗВИТИЕ", 20)
+	title.size_flags_horizontal = SIZE_EXPAND_FILL
+	head.add_child(title)
+	tech_gold = _label("", 14, Color(1.0, 0.85, 0.35))
+	head.add_child(tech_gold)
+	var close := Button.new()
+	close.text = "✕"
+	close.custom_minimum_size = Vector2(36, 32)
+	close.pressed.connect(toggle_tech)
+	head.add_child(close)
+	box.add_child(_label("Технологии покупаются за золото и действуют до конца матча.", 11, ThemeFactory.TEXT_DIM))
+	for key in Rules.TECH_ORDER:
+		var t: Dictionary = Rules.TECHS[key]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		box.add_child(row)
+		var text := VBoxContainer.new()
+		text.size_flags_horizontal = SIZE_EXPAND_FILL
+		text.add_theme_constant_override("separation", 0)
+		row.add_child(text)
+		text.add_child(_label(t["name"], 14))
+		var desc := _label(t["desc"], 11, ThemeFactory.TEXT_DIM)
+		text.add_child(desc)
+		var level := _label("", 13)
+		level.custom_minimum_size = Vector2(44, 0)
+		level.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		row.add_child(level)
+		var button := Button.new()
+		button.custom_minimum_size = Vector2(170, 36)
+		var k: String = key
+		button.pressed.connect(func(): research.emit(k))
+		row.add_child(button)
+		tech_rows[key] = {"level": level, "button": button}
+
+
+func _build_code_panel() -> void:
+	code_panel = PanelContainer.new()
+	code_panel.position = Vector2(12, 58)
+	code_panel.visible = false
+	add_child(code_panel)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	code_panel.add_child(row)
+	row.add_child(_label("Админ-код:", 13))
+	code_edit = LineEdit.new()
+	code_edit.custom_minimum_size = Vector2(120, 34)
+	code_edit.max_length = 12
+	code_edit.placeholder_text = "код"
+	code_edit.text_submitted.connect(func(t): _submit_code())
+	row.add_child(code_edit)
+	var ok := Button.new()
+	ok.text = "OK"
+	ok.custom_minimum_size = Vector2(60, 34)
+	ok.pressed.connect(_submit_code)
+	row.add_child(ok)
+
+
+func _submit_code() -> void:
+	admin_code.emit(code_edit.text.strip_edges())
+	code_edit.text = ""
+	code_panel.visible = false
+
+
+func toggle_tech() -> void:
+	tech_panel.visible = not tech_panel.visible
+	if tech_panel.visible:
+		_refresh_tech()
+
+
+func _refresh_tech() -> void:
+	var f: Dictionary = world.factions[human]
+	tech_gold.text = "Золото: " + Names.short_number(f["gold"])
+	for key in tech_rows:
+		var t: Dictionary = Rules.TECHS[key]
+		var level: int = world.tech_level(human, key)
+		var r: Dictionary = tech_rows[key]
+		r["level"].text = "%d/%d" % [level, t["max"]]
+		var b: Button = r["button"]
+		if level >= t["max"]:
+			b.text = "Изучено"
+			b.disabled = true
+		elif t["req"] != "" and world.tech_level(human, t["req"]) == 0:
+			b.text = "Нужно: " + Rules.TECHS[t["req"]]["name"]
+			b.disabled = true
+		else:
+			var cost: int = world.tech_cost(human, key)
+			b.text = "Изучить · " + Names.short_number(cost)
+			b.disabled = f["gold"] < cost
+
+
 func _build_tooltip() -> void:
 	tooltip = PanelContainer.new()
 	tooltip.visible = false
@@ -432,6 +607,12 @@ func set_mode(kind: String) -> void:
 			status_label.text = "Клик по своему берегу: порт даёт золото и высадки с моря. Esc — отмена"
 		"defense":
 			status_label.text = "Клик по своей земле: защита удорожает захват ваших клеток. Esc — отмена"
+		"market":
+			status_label.text = "Клик по своей земле: рынок приносит +12 золота в секунду. Esc — отмена"
+		"barracks":
+			status_label.text = "Клик по своей земле: казармы поднимают лимит и рост армии. Esc — отмена"
+		"bunker":
+			status_label.text = "Клик по своей земле: бункер сбивает чужие бомбы в радиусе 16 клеток. Esc — отмена"
 		"nuke", "mega":
 			status_label.text = "Клик по цели: через 3 секунды земля в радиусе станет ничьей и выжженной. Esc — отмена"
 		_:
@@ -504,8 +685,15 @@ func refresh(delta: float) -> void:
 	for kind in card_costs:
 		var cost: int = world.building_cost(kind, human)
 		var l: Label = card_costs[kind]
-		l.text = Names.short_number(cost)
-		l.add_theme_color_override("font_color", Color(1.0, 0.85, 0.35) if f["gold"] >= cost else Color(1.0, 0.45, 0.4))
+		var locked: bool = (kind == "nuke" and world.tech_level(human, "nuclear") == 0) or (kind == "mega" and world.tech_level(human, "rockets") == 0)
+		if locked:
+			l.text = "нужна техн."
+			l.add_theme_color_override("font_color", ThemeFactory.TEXT_DIM)
+		else:
+			l.text = Names.short_number(cost)
+			l.add_theme_color_override("font_color", Color(1.0, 0.85, 0.35) if f["gold"] >= cost else Color(1.0, 0.45, 0.4))
+	if tech_panel.visible and _attacks_timer <= 0.0:
+		_refresh_tech()
 
 	_lb_timer -= delta
 	if _lb_timer <= 0.0:

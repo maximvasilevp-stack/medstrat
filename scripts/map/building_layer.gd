@@ -20,10 +20,17 @@ func _ready() -> void:
 
 func _on_building_placed(_faction_id: int, kind: String, cell: int) -> void:
 	var rows: Array = PixelSprites.CITY
-	if kind == "port":
-		rows = PixelSprites.PORT
-	elif kind == "defense":
-		rows = PixelSprites.TOWER
+	match kind:
+		"port":
+			rows = PixelSprites.PORT
+		"defense":
+			rows = PixelSprites.TOWER
+		"market":
+			rows = PixelSprites.MARKET
+		"barracks":
+			rows = PixelSprites.BARRACKS
+		"bunker":
+			rows = PixelSprites.BUNKER
 	var s := Sprite2D.new()
 	s.texture = PixelSprites.texture(rows, kind)
 	s.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST

@@ -7,6 +7,7 @@ uniform sampler2D owner_tex : filter_nearest, repeat_disable;
 uniform sampler2D palette : filter_nearest, repeat_disable;
 uniform sampler2D heat_tex : filter_nearest, repeat_disable;
 uniform sampler2D scorch_tex : filter_nearest, repeat_disable;
+uniform sampler2D borders_tex : filter_nearest, repeat_disable;
 uniform ivec2 map_size = ivec2(640, 768);
 uniform int human_id = 1;
 uniform int hover_owner = 0;
@@ -21,6 +22,9 @@ const vec3 C_MOUNTAIN_EDGE = vec3(0.78, 0.78, 0.80);
 const vec3 C_RIVER = vec3(0.43, 0.67, 0.90);
 const vec3 C_LAKE = vec3(0.36, 0.60, 0.86);
 const vec3 C_VOID = vec3(0.63, 0.67, 0.59);
+const vec3 C_FOREST = vec3(0.42, 0.63, 0.36);
+const vec3 C_HILLS = vec3(0.67, 0.71, 0.53);
+const vec3 C_STEPPE = vec3(0.78, 0.80, 0.52);
 
 int terrain_at(ivec2 c) {
 	c = clamp(c, ivec2(0), map_size - 1);
@@ -59,11 +63,23 @@ void fragment() {
 		col = C_LAKE;
 	} else if (t == 8) {
 		col = C_VOID;
+	} else if (t == 9) {
+		col = C_FOREST;
+	} else if (t == 10) {
+		col = C_HILLS;
+	} else if (t == 11) {
+		col = C_STEPPE;
 	} else {
 		col = C_GRASS;
 	}
-	if (t >= 2 && t <= 6) {
-		col += vec3((hash(c) - 0.5) * 0.05);
+	if ((t >= 2 && t <= 6) || t >= 9) {
+		col += vec3((hash(c) - 0.5) * 0.06);
+	}
+	if (t == 9 && hash(c + ivec2(7, 3)) > 0.82) {
+		col *= 0.88;   // tree speckles
+	}
+	if (texelFetch(borders_tex, c, 0).r > 0.5) {
+		col *= 0.80;   // faint real-world borders
 	}
 	if (o > 0) {
 		vec3 oc = texelFetch(palette, ivec2(o, 0), 0).rgb;

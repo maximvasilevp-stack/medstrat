@@ -15,19 +15,37 @@ static func think(world, fid: int) -> void:
 	var contacts: Dictionary = world.contacts_of(fid)
 	var grace: bool = world.seconds() < Rules.BOT_GRACE_SECONDS
 
-	# buildings
-	if f["gold"] >= world.building_cost("city", fid) and f["cities"] < 1 + f["cells"] / 2500:
+	# buildings and research
+	var wants_bunker := false
+	for o in contacts:
+		if o != 0 and world.tech_level(o, "nuclear") > 0:
+			wants_bunker = true
+	if wants_bunker and f["bunkers"] == 0 and f["gold"] >= world.building_cost("bunker", fid):
+		world.apply({"type": "build", "player": fid, "kind": "bunker", "cell": _random_border(world, border)})
+	elif f["gold"] >= world.building_cost("city", fid) and f["cities"] < 1 + f["cells"] / 2500:
 		world.apply({"type": "build", "player": fid, "kind": "city", "cell": _random_border(world, border)})
 	elif f["gold"] >= world.building_cost("port", fid) and f["ports"] == 0:
 		for i in border:
 			if map.is_coast(i):
 				world.apply({"type": "build", "player": fid, "kind": "port", "cell": i})
 				break
+	elif f["gold"] >= world.building_cost("market", fid) and f["markets"] < f["cities"]:
+		world.apply({"type": "build", "player": fid, "kind": "market", "cell": _random_border(world, border)})
+	elif f["gold"] >= world.building_cost("barracks", fid) and f["barracks"] < f["cities"] and f["cells"] > 400:
+		world.apply({"type": "build", "player": fid, "kind": "barracks", "cell": _random_border(world, border)})
 	elif f["gold"] >= world.building_cost("defense", fid) and f["defense"] < 3 and f["cells"] > 300:
 		world.apply({"type": "build", "player": fid, "kind": "defense", "cell": _random_border(world, border)})
+	else:
+		for key in Rules.TECH_ORDER:
+			if (key == "nuclear" or key == "rockets") and f["cells"] < 3000:
+				continue
+			var cost: int = world.tech_cost(fid, key)
+			if cost > 0 and f["gold"] >= cost * 1.5:
+				if world.apply({"type": "research", "player": fid, "tech": key})["ok"]:
+					break
 
 	# nuke a big neighbour now and then
-	if f["gold"] >= Rules.NUKE_COST * 1.5 and world.rng.randf() < Rules.BOT_NUKE_CHANCE:
+	if world.tech_level(fid, "nuclear") > 0 and f["gold"] >= Rules.NUKE_COST * 1.5 and world.rng.randf() < Rules.BOT_NUKE_CHANCE:
 		var victim := 0
 		var victim_cells := 400
 		for o in contacts:

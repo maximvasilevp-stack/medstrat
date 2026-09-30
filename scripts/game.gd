@@ -136,6 +136,9 @@ func _ready() -> void:
 	hud.cancel_attack.connect(func(t): world.apply({"type": "cancel", "player": human, "target": t}))
 	hud.exit_pressed.connect(func(): exit_dialog.open())
 	hud.mute_toggled.connect(_toggle_mute)
+	hud.research.connect(func(k): world.apply({"type": "research", "player": human, "tech": k}))
+	hud.admin_code.connect(func(code): world.apply({"type": "admin", "player": human, "code": code}))
+	hud.zoom_requested.connect(func(step): camera.zoom_step(step))
 	hud.menu_requested.connect(func(): get_tree().change_scene_to_file("res://scenes/main_menu.tscn"))
 	hud.restart_requested.connect(func(): get_tree().reload_current_scene())
 	world.match_started.connect(_on_match_started)
@@ -145,6 +148,11 @@ func _ready() -> void:
 	world.ship_landed.connect(_on_ship_landed)
 	world.nuke_launched.connect(_on_nuke_launched)
 	world.nuke_detonated.connect(func(_c, _r): _sfx("boom"))
+	world.nuke_intercepted.connect(_on_nuke_intercepted)
+	world.tech_researched.connect(_on_tech_researched)
+	world.admin_enabled.connect(func(_f):
+		hud.toast("Админ-режим: золото и армия бесконечны", Color(1, 0.85, 0.35))
+		_sfx("win"))
 	world.faction_eliminated.connect(_on_faction_eliminated)
 	world.match_finished.connect(_on_match_finished)
 	world.building_placed.connect(_on_building_placed)
@@ -181,9 +189,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			exit_dialog.open()
 		get_viewport().set_input_as_handled()
 	elif event is InputEventKey and event.pressed and not event.echo:
-		var keys := {KEY_1: "defense", KEY_2: "city", KEY_3: "port", KEY_4: "nuke", KEY_5: "mega"}
+		var keys := {KEY_1: "defense", KEY_2: "city", KEY_3: "port", KEY_4: "market", KEY_5: "barracks",
+			KEY_6: "bunker", KEY_7: "nuke", KEY_8: "mega"}
 		if keys.has(event.physical_keycode):
 			hud.toggle_card(keys[event.physical_keycode])
+			get_viewport().set_input_as_handled()
+		elif event.physical_keycode == KEY_T:
+			hud.toggle_tech()
 			get_viewport().set_input_as_handled()
 		elif event.physical_keycode == KEY_M:
 			_toggle_mute()
@@ -230,6 +242,8 @@ func _on_cell_clicked(i: int) -> void:
 	if world.phase == world.Phase.SPAWN:
 		world.apply({"type": "spawn", "player": human, "cell": i})
 		return
+	if hud.tech_panel.visible:
+		hud.toggle_tech()
 	if mode == "nuke" or mode == "mega":
 		var r: Dictionary = world.apply({"type": "nuke", "player": human, "cell": i, "mega": mode == "mega"})
 		if r["ok"]:
@@ -299,9 +313,20 @@ func _on_nuke_launched(fid: int, _from: int, _to: int, _ticks: int, mega: bool) 
 		hud.toast("%s запускает %s!" % [world.factions[fid]["name"], "MEGA NUKE" if mega else "ядерную бомбу"], Color(1, 0.7, 0.4))
 
 
+func _on_nuke_intercepted(_cell: int, by: int) -> void:
+	hud.toast("Бомба сбита бункером (%s)" % world.factions[by]["name"], Color(0.8, 0.9, 1))
+	_sfx("error", -4.0)
+
+
+func _on_tech_researched(fid: int, key: String, level: int) -> void:
+	if fid == human:
+		hud.toast("Изучено: %s (уровень %d)" % [Rules.TECHS[key]["name"], level], Color(0.85, 0.75, 1))
+		_sfx("build")
+
+
 func _on_building_placed(fid: int, kind: String, _cell: int) -> void:
 	if fid == human:
-		var names := {"city": "Город", "port": "Порт", "defense": "Защита"}
+		var names := {"city": "Город", "port": "Порт", "defense": "Защита", "market": "Рынок", "barracks": "Казармы", "bunker": "Бункер"}
 		hud.toast("%s: построено" % names[kind], Color(0.75, 1, 0.75))
 		_sfx("build")
 
@@ -340,6 +365,7 @@ func _handle_args() -> void:
 	var run_ticks := 0
 	var demo := false
 	var open_exit := false
+	var open_tech := false
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--screenshot="):
 			screenshot_path = a.get_slice("=", 1)
@@ -351,6 +377,8 @@ func _handle_args() -> void:
 			demo = true
 		elif a == "--open-exit":
 			open_exit = true
+		elif a == "--open-tech":
+			open_tech = true
 	if run_ticks > 0 or demo:
 		world.auto_spawn_human()
 	if demo:
@@ -359,6 +387,8 @@ func _handle_args() -> void:
 		world.step()
 	if open_exit:
 		exit_dialog.open()
+	if open_tech:
+		hud.toggle_tech()
 	if screenshot_path != "":
 		_take_screenshot()
 
@@ -367,6 +397,7 @@ func _run_demo() -> void:
 	var f: Dictionary = world.factions[human]
 	f["gold"] = 100000.0
 	f["troops"] = 3000.0
+	f["tech"]["nuclear"] = 1
 	var spawn: int = f["spawn"]
 	world.apply({"type": "build", "player": human, "kind": "city", "cell": spawn})
 	var target := -1
