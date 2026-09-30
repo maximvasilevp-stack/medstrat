@@ -52,7 +52,8 @@ func _ready() -> void:
 	ok.pressed.connect(_submit_code)
 	code_row.add_child(ok)
 	_button(box, "В главное меню", _to_menu)
-	_button(box, "Выйти на рабочий стол", func(): get_tree().quit())
+	if not OS.has_feature("web"):
+		_button(box, "Выйти на рабочий стол", func(): get_tree().quit())
 
 
 func _button(parent: Node, text: String, cb: Callable) -> Button:

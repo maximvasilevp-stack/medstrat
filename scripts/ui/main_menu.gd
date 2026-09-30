@@ -71,7 +71,8 @@ func _ready() -> void:
 			settings.muted = not on
 			settings.save())
 	box.add_child(sound_check)
-	_button(box, "Выход", func(): get_tree().quit())
+	if not OS.has_feature("web"):
+		_button(box, "Выход", func(): get_tree().quit())
 
 	help_panel = PanelContainer.new()
 	help_panel.set_anchors_and_offsets_preset(PRESET_CENTER_RIGHT)

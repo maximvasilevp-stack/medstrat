@@ -168,6 +168,8 @@ func _ready() -> void:
 # ------------------------------------------------------------------ loop
 
 func _process(delta: float) -> void:
+	if world == null:
+		return
 	_acc += delta * speed
 	var n := 0
 	while _acc >= Rules.TICK_DT and n < 50:
