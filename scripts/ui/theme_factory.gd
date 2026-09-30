@@ -2,19 +2,19 @@ extends RefCounted
 ## Bright "dopamine" UI theme built in code: cream panels, pastel pills, dark-brown text.
 
 const BG := Color("#FFFFFF")
-const BG_HOVER := Color("#7ED5F2")
-const BG_PRESSED := Color("#FFAE00")
+const BG_HOVER := Color("#7FB9E6")
+const BG_PRESSED := Color("#FF8F45")
 const FRAME := Color("#EFE3D6")
 const TEXT := Color("#3B2A1A")
 const TEXT_DIM := Color("#8A7563")
 const PANEL := Color("#FFF8F2")
-const SKY := Color("#7ED5F2")
-const LAVENDER := Color("#CEA8F6")
-const LIME := Color("#B2E384")
-const LEMON := Color("#F6EE75")
-const ORANGE := Color("#FFAE00")
-const PEACH := Color("#FACBB8")
-const BLUE := Color("#A2C7F7")
+const SKY := Color("#7FB9E6")        # Sky
+const LAVENDER := Color("#D6BEEA")   # Lavender
+const LEMON := Color("#F4D77A")      # Butter
+const LIME := Color("#B7C96A")       # Matcha
+const ORANGE := Color("#FF8F45")     # Tangerine
+const PEACH := Color("#F98BA9")      # Pink
+const BLUE := Color("#A9CFEE")       # lighter Sky
 const RED := Color("#D9534F")
 const GREEN := Color("#3C8D3F")
 const RADIUS := 14
@@ -58,6 +58,7 @@ static func make() -> Theme:
 	t.set_color("font_hover_pressed_color", "CheckBox", TEXT)
 	t.set_stylebox("normal", "LineEdit", box(BG, FRAME, 8, 10))
 	t.set_stylebox("focus", "LineEdit", box(BG, ORANGE, 8, 10))
+	t.set_stylebox("hover", "LineEdit", box(BG, SKY, 8, 10))
 	t.set_color("font_color", "LineEdit", TEXT)
 	t.set_color("font_placeholder_color", "LineEdit", TEXT_DIM)
 	t.set_color("caret_color", "LineEdit", TEXT)

@@ -327,7 +327,7 @@ func _build_resources() -> void:
 	army_cap = _label("/ 0", 12, ThemeFactory.TEXT_DIM)
 	army_cap.size_flags_vertical = SIZE_SHRINK_END
 	army_row.add_child(army_cap)
-	army_bar = _bar(Color("#F07AA8"), 8)
+	army_bar = _bar(ThemeFactory.PEACH, 8)
 	army.add_child(army_bar)
 	army_rate = _label("", 11, ThemeFactory.GREEN)
 	army.add_child(army_rate)
@@ -344,7 +344,7 @@ func _build_resources() -> void:
 	gold_row.add_theme_constant_override("separation", 8)
 	gold.add_child(gold_row)
 	gold_row.add_child(_icon(PixelSprites.COIN, "coin", Vector2(26, 26)))
-	gold_value = _label("0", 24, Color("#C97B00"))
+	gold_value = _label("0", 24, Color("#D9731F"))
 	gold_row.add_child(gold_value)
 	gold_rate = _label("", 11, ThemeFactory.GREEN)
 	gold_rate.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -448,7 +448,7 @@ func _build_tech_panel() -> void:
 	var title := _label("РАЗВИТИЕ", 20)
 	title.size_flags_horizontal = SIZE_EXPAND_FILL
 	head.add_child(title)
-	tech_gold = _label("", 14, Color("#C97B00"))
+	tech_gold = _label("", 14, Color("#D9731F"))
 	head.add_child(tech_gold)
 	var close := Button.new()
 	close.text = "✕"
@@ -575,7 +575,7 @@ func _build_event_panel() -> void:
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 8)
 	event_panel.add_child(box)
-	event_title = _label("", 18, Color("#C97B00"))
+	event_title = _label("", 18, Color("#D9731F"))
 	box.add_child(event_title)
 	event_text = _label("", 13)
 	event_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -855,7 +855,7 @@ func refresh(delta: float) -> void:
 	gold_rate.text = "+%s / сек" % Names.short_number(world.gold_rate_of(human))
 	var approval: float = f["approval"]
 	approval_value.text = "%d%%" % int(approval)
-	var ac := ThemeFactory.GREEN if approval >= 50.0 else (Color("#C97B00") if approval >= 25.0 else ThemeFactory.RED)
+	var ac := ThemeFactory.GREEN if approval >= 50.0 else (Color("#D9731F") if approval >= 25.0 else ThemeFactory.RED)
 	approval_value.add_theme_color_override("font_color", ac)
 	approval_bar.value = approval / 100.0
 	if not spawning:
@@ -910,7 +910,7 @@ func _refresh_leaderboard() -> void:
 		r["name"].text = f["name"]
 		var share: float = world.land_share(f["id"]) * 100.0
 		r["share"].text = ("%.2f%%" if share < 1.0 else "%.1f%%") % share
-		var c: Color = Color("#C97B00") if f["id"] == human else ThemeFactory.TEXT
+		var c: Color = Color("#D9731F") if f["id"] == human else ThemeFactory.TEXT
 		r["name"].add_theme_color_override("font_color", c)
 		r["rank"].add_theme_color_override("font_color", c)
 

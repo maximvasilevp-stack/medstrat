@@ -78,7 +78,7 @@ func _init(m, game_seed: int, human_name: String = "Вы") -> void:
 	heat.resize(map.size())
 	scorch = PackedByteArray()
 	scorch.resize(map.size())
-	var me := _new_faction(human_name, Color(0.93, 0.33, 0.33), Kind.HUMAN)
+	var me := _new_faction(human_name, Color("#F98BA9"), Kind.HUMAN)
 	me["troops"] = float(Rules.START_TROOPS)
 	me["gold"] = float(Rules.START_GOLD)
 	var used := {}
@@ -98,20 +98,20 @@ func _init(m, game_seed: int, human_name: String = "Вы") -> void:
 		var cell: int = c["cell"]
 		if owner[cell] != 0 or not _blob_ok(cell, radius, Rules.MIN_SPAWN_DISTANCE * 0.5):
 			continue
-		var f := _new_faction(c["name"], Color(0.60, 0.60, 0.62), Kind.CITY)
+		var f := _new_faction(c["name"], Color("#B9B3AE"), Kind.CITY)
 		_spawn_blob(f, radius, cell)
 		f["troops"] = float(Rules.CITY_STATE_TROOPS_MIN + (Rules.CITY_STATE_TROOPS_MAX - Rules.CITY_STATE_TROOPS_MIN) * (size - 1) / 2 + rng.randi_range(-150, 150))
 		f["base_troops"] = f["troops"]
 		placed += 1
 	while placed < Rules.NUM_CITY_STATES:
-		var f := _new_faction(Names.city_name(rng, used), Color(0.60, 0.60, 0.62), Kind.CITY)
+		var f := _new_faction(Names.city_name(rng, used), Color("#B9B3AE"), Kind.CITY)
 		var radius := rng.randi_range(Rules.CITY_STATE_RADIUS_MIN, Rules.CITY_STATE_RADIUS_MAX)
 		_spawn_blob(f, radius, _find_spawn(radius))
 		f["troops"] = float(rng.randi_range(Rules.CITY_STATE_TROOPS_MIN, Rules.CITY_STATE_TROOPS_MAX))
 		f["base_troops"] = f["troops"]
 		placed += 1
 	for i in Rules.NUM_BOTS:
-		var f := _new_faction(Names.bot_name(rng, used), Color.from_hsv(fmod(0.11 + i * 0.618034, 1.0), 0.62, 0.86), Kind.BOT)
+		var f := _new_faction(Names.bot_name(rng, used), Color.from_hsv(fmod(0.05 + i * 0.618034, 1.0), 0.48, 0.92), Kind.BOT)
 		_spawn_blob(f, Rules.SPAWN_RADIUS, _find_spawn(Rules.SPAWN_RADIUS))
 		f["troops"] = float(Rules.START_TROOPS)
 		f["gold"] = float(Rules.BOT_START_GOLD)
