@@ -67,6 +67,26 @@ const PLUS := [
 	"...f...",
 ]
 
+const BOAT := [
+	"...s...",
+	"..ss...",
+	".sss...",
+	"...m...",
+	"ddddddd",
+	".ddddd.",
+	"..ddd..",
+]
+
+const ROCKET := [
+	"...f...",
+	"..fxf..",
+	"..fff..",
+	"..fff..",
+	".ifffi.",
+	".i.f.i.",
+	"..y.y..",
+]
+
 const ARMY := [
 	"iiiii",
 	"ixixi",

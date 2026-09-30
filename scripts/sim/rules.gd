@@ -4,6 +4,8 @@ extends RefCounted
 const TICKS_PER_SEC := 10
 const TICK_DT := 1.0 / TICKS_PER_SEC
 const MATCH_SECONDS := 900               # a match lasts 15 minutes, then the leaderboard decides
+const SPAWN_SECONDS := 20                # time to pick a starting point before the human is placed automatically
+const HEAT_TICKS := 14                   # freshly captured cells glow for this many ticks
 
 # --- spawning
 const NUM_BOTS := 12
@@ -49,16 +51,29 @@ const ATTACK_MIN_TROOPS := 10.0
 const ATTACK_RATE_MIN := 1               # cells per tick an attack advances at least
 const ATTACK_RATE_MAX := 6
 const ATTACK_RATE_DIV := 6.0             # cells per tick = sqrt(troops) / this
-const NAVAL_REACH := 60                  # cells of water an attack may cross with a port
+const NAVAL_REACH := 150.0               # max distance (cells) of a naval landing from your coast
+const SHIP_SPEED := 4.0                  # cells per tick a landing ship travels
+const NUKE_COST := 20000
+const MEGA_NUKE_COST := 80000
+const NUKE_RADIUS := 10
+const MEGA_NUKE_RADIUS := 18
+const NUKE_FLIGHT_TICKS := 30
+const NUKE_TROOP_FACTOR := 1.0           # defenders lose troops = cells lost * their density * this
+const SCORCH_TICKS := 900                # scorched land stays scorched for 90 s
+const SCORCH_COST_MULT := 2.0            # and costs this much more to capture
 const DEFAULT_ATTACK_SIZE := 0.33
 
 # --- bots
 const BOT_PERIOD_TICKS := 30
 const BOT_GRACE_SECONDS := 60            # bots do not attack the human before this
 const BOT_MIN_TROOPS_SHARE := 0.35       # share of the cap before a bot expands into empty land
-const BOT_ENEMY_TROOPS_SHARE := 0.6      # share of the cap before a bot attacks someone
+const BOT_ENEMY_TROOPS_SHARE := 0.5      # share of the cap before a bot attacks someone
 const BOT_RATIO_EMPTY := 0.4
-const BOT_RATIO_ENEMY := 0.5
+const BOT_RATIO_ENEMY := 0.6
+const BOT_RETALIATE_SHARE := 0.3         # attacked bots strike back at this share of the cap
+const BOT_RATIO_RETALIATE := 0.4
+const BOT_NUKE_CHANCE := 0.25            # per decision, when a nuke is affordable and a big neighbour exists
+const BOT_NAVAL_CHANCE := 0.5
 
 
 static func terrain_mult(terrain: int) -> float:

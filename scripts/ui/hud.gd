@@ -1,22 +1,27 @@
 extends Control
-## In-match overlay: exit button, match timer, leaderboard, building cards, army/gold panel,
-## attack-size slider, toasts and the result screen.
+## In-match overlay: exit and sound buttons, match timer, leaderboard, action cards with hotkeys,
+## army/gold panel with the attack-size slider, attacks panel, cursor tooltip, toasts, result screen.
 
 const ThemeFactory := preload("res://scripts/ui/theme_factory.gd")
 const PixelSprites := preload("res://scripts/map/pixel_sprites.gd")
 const Names := preload("res://scripts/sim/names.gd")
 const Rules := preload("res://scripts/sim/rules.gd")
 
-signal mode_selected(kind: String)      # "" = no placement mode
+signal mode_selected(kind: String)      # "" = no placement / targeting mode
 signal exit_pressed
 signal attack_size_changed(ratio: float)
+signal cancel_attack(target: int)
+signal mute_toggled
 signal menu_requested
 signal continue_requested
+signal restart_requested
 
 const CARDS := [
-	["defense", "ЗАЩИТА", PixelSprites.TOWER],
-	["city", "ГОРОД", PixelSprites.CITY],
-	["port", "ПОРТ", PixelSprites.PORT],
+	["defense", "ЗАЩИТА", PixelSprites.TOWER, "1"],
+	["city", "ГОРОД", PixelSprites.CITY, "2"],
+	["port", "ПОРТ", PixelSprites.PORT, "3"],
+	["nuke", "ЯДЕРНАЯ БОМБА", PixelSprites.ROCKET, "4"],
+	["mega", "MEGA NUKE", PixelSprites.ROCKET, "5"],
 ]
 
 var world
@@ -39,12 +44,18 @@ var card_group := ButtonGroup.new()
 var status_label: Label
 var toast_label: Label
 var toast_tween: Tween
+var attacks_panel: PanelContainer
+var attacks_box: VBoxContainer
+var tooltip: PanelContainer
+var tooltip_label: Label
+var sound_button: Button
 var overlay: Control
 var overlay_title: Label
 var overlay_body: Label
 var overlay_continue: Button
 var _syncing := false
 var _lb_timer := 0.0
+var _attacks_timer := 0.0
 
 
 func _ready() -> void:
@@ -56,6 +67,8 @@ func _ready() -> void:
 	_build_leaderboard()
 	_build_cards()
 	_build_resources()
+	_build_attacks_panel()
+	_build_tooltip()
 	_build_toast()
 	_build_overlay()
 
@@ -107,12 +120,21 @@ static func _icon(rows: Array, key: String, size: Vector2) -> TextureRect:
 
 
 func _build_top() -> void:
+	var row := HBoxContainer.new()
+	row.position = Vector2(12, 12)
+	row.add_theme_constant_override("separation", 8)
+	add_child(row)
 	var exit_button := Button.new()
 	exit_button.text = "Выход"
-	exit_button.position = Vector2(12, 12)
 	exit_button.custom_minimum_size = Vector2(110, 38)
 	exit_button.pressed.connect(func(): exit_pressed.emit())
-	add_child(exit_button)
+	row.add_child(exit_button)
+	sound_button = Button.new()
+	sound_button.custom_minimum_size = Vector2(120, 38)
+	sound_button.tooltip_text = "Клавиша M"
+	sound_button.pressed.connect(func(): mute_toggled.emit())
+	row.add_child(sound_button)
+	set_muted(false)
 
 	timer_bar = _bar(Color(0.36, 0.78, 0.36), 12)
 	timer_bar.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
@@ -183,32 +205,34 @@ func _build_cards() -> void:
 	add_child(bar)
 	for d in CARDS:
 		var kind: String = d[0]
-		var rows: Array = d[2]
 		var b := Button.new()
 		b.toggle_mode = true
 		b.button_group = card_group
-		b.custom_minimum_size = Vector2(100, 84)
+		b.custom_minimum_size = Vector2(104, 84)
 		b.toggled.connect(_on_card_toggled.bind(kind))
 		var box := VBoxContainer.new()
 		box.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
 		box.alignment = BoxContainer.ALIGNMENT_CENTER
 		box.mouse_filter = MOUSE_FILTER_IGNORE
-		box.add_theme_constant_override("separation", 2)
+		box.add_theme_constant_override("separation", 1)
 		b.add_child(box)
-		box.add_child(_icon(rows, kind, Vector2(40, 30)))
-		var title := _label(d[1], 11)
+		box.add_child(_icon(d[2], kind, Vector2(40, 28)))
+		var title := _label(d[1], 10)
 		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		box.add_child(title)
 		var cost := _label("", 12, Color(1.0, 0.45, 0.4))
 		cost.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		box.add_child(cost)
+		var key := _label(d[3], 10, ThemeFactory.TEXT_DIM)
+		key.position = Vector2(6, 3)
+		b.add_child(key)
 		bar.add_child(b)
 		cards[kind] = b
 		card_costs[kind] = cost
 	var plus := Button.new()
 	plus.disabled = true
 	plus.tooltip_text = "Новые постройки появятся позже"
-	plus.custom_minimum_size = Vector2(84, 84)
+	plus.custom_minimum_size = Vector2(70, 84)
 	var pbox := CenterContainer.new()
 	pbox.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
 	pbox.mouse_filter = MOUSE_FILTER_IGNORE
@@ -299,6 +323,30 @@ func _build_resources() -> void:
 	attack_row.add_child(attack_troops)
 
 
+func _build_attacks_panel() -> void:
+	attacks_panel = PanelContainer.new()
+	attacks_panel.set_anchors_and_offsets_preset(PRESET_CENTER_LEFT)
+	attacks_panel.offset_left = 12
+	attacks_panel.offset_right = 262
+	attacks_panel.offset_top = -80
+	attacks_panel.offset_bottom = 80
+	attacks_panel.visible = false
+	add_child(attacks_panel)
+	attacks_box = VBoxContainer.new()
+	attacks_box.add_theme_constant_override("separation", 4)
+	attacks_panel.add_child(attacks_box)
+
+
+func _build_tooltip() -> void:
+	tooltip = PanelContainer.new()
+	tooltip.visible = false
+	tooltip.mouse_filter = MOUSE_FILTER_IGNORE
+	tooltip.z_index = 10
+	add_child(tooltip)
+	tooltip_label = _label("", 12)
+	tooltip.add_child(tooltip_label)
+
+
 func _build_toast() -> void:
 	toast_label = _label("", 18)
 	toast_label.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
@@ -322,14 +370,14 @@ func _build_overlay() -> void:
 	overlay.add_child(dim)
 	var panel := PanelContainer.new()
 	panel.set_anchors_and_offsets_preset(PRESET_CENTER)
-	panel.offset_left = -240
-	panel.offset_right = 240
-	panel.offset_top = -170
-	panel.offset_bottom = 170
+	panel.offset_left = -250
+	panel.offset_right = 250
+	panel.offset_top = -190
+	panel.offset_bottom = 190
 	overlay.add_child(panel)
 	var box := VBoxContainer.new()
 	box.alignment = BoxContainer.ALIGNMENT_CENTER
-	box.add_theme_constant_override("separation", 12)
+	box.add_theme_constant_override("separation", 10)
 	panel.add_child(box)
 	overlay_title = _label("", 28)
 	overlay_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -343,13 +391,17 @@ func _build_overlay() -> void:
 		overlay.visible = false
 		continue_requested.emit())
 	box.add_child(overlay_continue)
+	var again := Button.new()
+	again.text = "Играть снова"
+	again.pressed.connect(func(): restart_requested.emit())
+	box.add_child(again)
 	var b := Button.new()
 	b.text = "В главное меню"
 	b.pressed.connect(func(): menu_requested.emit())
 	box.add_child(b)
 
 
-# ------------------------------------------------------------------ events
+# ------------------------------------------------------------------ events and api
 
 func _on_card_toggled(pressed: bool, kind: String) -> void:
 	if _syncing:
@@ -362,6 +414,12 @@ func _on_slider(v: float) -> void:
 	attack_size_changed.emit(v)
 
 
+func toggle_card(kind: String) -> void:
+	if not cards.has(kind) or cards[kind].disabled:
+		return
+	mode_selected.emit("" if cards[kind].button_pressed else kind)
+
+
 func set_mode(kind: String) -> void:
 	_syncing = true
 	for k in cards:
@@ -369,13 +427,32 @@ func set_mode(kind: String) -> void:
 	_syncing = false
 	match kind:
 		"city":
-			status_label.text = "Кликните по своей земле, где построить город (+войска, +лимит). Esc — отмена"
+			status_label.text = "Клик по своей земле: город поднимает лимит и рост армии. Esc — отмена"
 		"port":
-			status_label.text = "Кликните по своему берегу: порт даёт золото и высадки с моря. Esc — отмена"
+			status_label.text = "Клик по своему берегу: порт даёт золото и высадки с моря. Esc — отмена"
 		"defense":
-			status_label.text = "Кликните по своей земле: защита удорожает захват ваших клеток. Esc — отмена"
+			status_label.text = "Клик по своей земле: защита удорожает захват ваших клеток. Esc — отмена"
+		"nuke", "mega":
+			status_label.text = "Клик по цели: через 3 секунды земля в радиусе станет ничьей и выжженной. Esc — отмена"
 		_:
-			status_label.text = "Клик по чужой или ничьей земле — атака долей армии (ползунок внизу)"
+			status_label.text = "Клик по земле — атака долей армии · с портом клик по берегу за морем — высадка"
+
+
+func set_muted(muted: bool) -> void:
+	sound_button.text = "Звук: выкл" if muted else "Звук: вкл"
+
+
+func set_tooltip(text: String, at: Vector2) -> void:
+	if text == "":
+		tooltip.visible = false
+		return
+	tooltip_label.text = text
+	tooltip.visible = true
+	tooltip.size = tooltip.get_combined_minimum_size()
+	var p := at + Vector2(18, 18)
+	p.x = minf(p.x, size.x - tooltip.size.x - 8)
+	p.y = minf(p.y, size.y - tooltip.size.y - 8)
+	tooltip.position = p
 
 
 func toast(text: String, color: Color = Color(1, 0.95, 0.8)) -> void:
@@ -401,11 +478,20 @@ func refresh(delta: float) -> void:
 	if world == null:
 		return
 	var f: Dictionary = world.factions[human]
-	var elapsed: float = world.seconds()
-	var remaining: int = maxi(0, int(Rules.MATCH_SECONDS - elapsed))
-	timer_bar.value = clampf(elapsed / Rules.MATCH_SECONDS, 0.0, 1.0)
-	@warning_ignore("integer_division")
-	timer_label.text = "Осталось %d:%02d" % [remaining / 60, remaining % 60]
+	var spawning: bool = world.phase == world.Phase.SPAWN
+	for k in cards:
+		cards[k].disabled = spawning
+	if spawning:
+		var left := int(ceil(world.spawn_seconds_left()))
+		timer_bar.value = 0.0
+		timer_label.text = "До начала: %d с" % left
+		status_label.text = "Выберите точку старта: кликните по свободной земле (автостарт через %d с)" % left
+	else:
+		var elapsed: float = world.seconds()
+		var remaining: int = maxi(0, int(Rules.MATCH_SECONDS - elapsed))
+		timer_bar.value = clampf(elapsed / Rules.MATCH_SECONDS, 0.0, 1.0)
+		@warning_ignore("integer_division")
+		timer_label.text = "Осталось %d:%02d" % [remaining / 60, remaining % 60]
 
 	var cap: float = world.max_troops_of(human)
 	army_value.text = Names.short_number(f["troops"])
@@ -425,6 +511,10 @@ func refresh(delta: float) -> void:
 	if _lb_timer <= 0.0:
 		_lb_timer = 0.5
 		_refresh_leaderboard()
+	_attacks_timer -= delta
+	if _attacks_timer <= 0.0:
+		_attacks_timer = 0.25
+		_refresh_attacks()
 
 
 func _refresh_leaderboard() -> void:
@@ -451,3 +541,36 @@ func _refresh_leaderboard() -> void:
 		var c: Color = Color(1, 0.8, 0.5) if f["id"] == human else ThemeFactory.TEXT
 		r["name"].add_theme_color_override("font_color", c)
 		r["rank"].add_theme_color_override("font_color", c)
+
+
+func _refresh_attacks() -> void:
+	for child in attacks_box.get_children():
+		child.queue_free()
+	var mine: Array = world.attacks_of(human)
+	var ships: Array = world.ships_of(human)
+	var incoming: Array = world.incoming_attacks(human)
+	if mine.is_empty() and ships.is_empty() and incoming.is_empty():
+		attacks_panel.visible = false
+		return
+	attacks_panel.visible = true
+	attacks_box.add_child(_label("БОИ", 11, ThemeFactory.TEXT_DIM))
+	for a in mine:
+		var row := HBoxContainer.new()
+		var who: String = "ничья земля" if a["target"] == 0 else world.factions[a["target"]]["name"]
+		var l := _label("→ %s · %s" % [who, Names.short_number(a["troops"])], 12)
+		l.size_flags_horizontal = SIZE_EXPAND_FILL
+		l.clip_text = true
+		row.add_child(l)
+		var b := Button.new()
+		b.text = "✕"
+		b.custom_minimum_size = Vector2(28, 24)
+		b.tooltip_text = "Отозвать войска"
+		var t: int = a["target"]
+		b.pressed.connect(func(): cancel_attack.emit(t))
+		row.add_child(b)
+		attacks_box.add_child(row)
+	for s in ships:
+		var who: String = "ничья земля" if s["target"] == 0 else world.factions[s["target"]]["name"]
+		attacks_box.add_child(_label("⛵ %s · %s (%d с)" % [who, Names.short_number(s["troops"]), int(ceil(s["ticks_left"] * Rules.TICK_DT))], 12))
+	for a in incoming:
+		attacks_box.add_child(_label("← %s · %s" % [world.factions[a["attacker"]]["name"], Names.short_number(a["troops"])], 12, Color(1, 0.55, 0.45)))

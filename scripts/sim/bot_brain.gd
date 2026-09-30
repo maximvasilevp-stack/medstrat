@@ -12,6 +12,8 @@ static func think(world, fid: int) -> void:
 	var border: Dictionary = f["border"]
 	if border.is_empty():
 		return
+	var contacts: Dictionary = world.contacts_of(fid)
+	var grace: bool = world.seconds() < Rules.BOT_GRACE_SECONDS
 
 	# buildings
 	if f["gold"] >= world.building_cost("city", fid) and f["cities"] < 1 + f["cells"] / 2500:
@@ -24,18 +26,43 @@ static func think(world, fid: int) -> void:
 	elif f["gold"] >= world.building_cost("defense", fid) and f["defense"] < 3 and f["cells"] > 300:
 		world.apply({"type": "build", "player": fid, "kind": "defense", "cell": _random_border(world, border)})
 
+	# nuke a big neighbour now and then
+	if f["gold"] >= Rules.NUKE_COST * 1.5 and world.rng.randf() < Rules.BOT_NUKE_CHANCE:
+		var victim := 0
+		var victim_cells := 400
+		for o in contacts:
+			if o == 0 or (grace and o == world.human):
+				continue
+			if world.factions[o]["cells"] > victim_cells:
+				victim_cells = world.factions[o]["cells"]
+				victim = o
+		if victim != 0:
+			world.apply({"type": "nuke", "player": fid, "cell": world.centroid_cell(victim), "mega": false})
+
+	# strike back at whoever attacks us
+	if share >= Rules.BOT_RETALIATE_SHARE:
+		for a in world.incoming_attacks(fid):
+			var enemy: int = a["attacker"]
+			if enemy == world.human and grace:
+				continue
+			if contacts.has(enemy) and not world.has_attack(fid, enemy):
+				world.launch_attack(fid, enemy, Rules.BOT_RATIO_RETALIATE)
+				return
+
 	# expansion into empty land first
-	var contacts: Dictionary = world.contacts_of(fid)
-	if contacts.is_empty():
-		return
-	if contacts.has(0) and share >= Rules.BOT_MIN_TROOPS_SHARE and not world.has_attack(fid, 0):
-		world.launch_attack(fid, 0, Rules.BOT_RATIO_EMPTY)
-		return
+	if contacts.has(0):
+		if share >= Rules.BOT_MIN_TROOPS_SHARE and not world.has_attack(fid, 0):
+			world.launch_attack(fid, 0, Rules.BOT_RATIO_EMPTY)
+			return
+	elif f["ports"] > 0 and share >= Rules.BOT_MIN_TROOPS_SHARE and world.ships_of(fid).is_empty() and world.rng.randf() < Rules.BOT_NAVAL_CHANCE:
+		var landing := _naval_target(world, fid)
+		if landing != -1:
+			world.launch_attack(fid, world.owner[landing], Rules.BOT_RATIO_EMPTY, landing)
+			return
 
 	# then the cheapest neighbour
 	if share < Rules.BOT_ENEMY_TROOPS_SHARE:
 		return
-	var grace: bool = world.seconds() < Rules.BOT_GRACE_SECONDS
 	var best := 0
 	var best_score := INF
 	for o in contacts:
@@ -60,3 +87,20 @@ static func think(world, fid: int) -> void:
 static func _random_border(world, border: Dictionary) -> int:
 	var keys := border.keys()
 	return keys[world.rng.randi_range(0, keys.size() - 1)]
+
+
+## A free (or weakly held) beach within reach of this faction's coast.
+static func _naval_target(world, fid: int) -> int:
+	var map = world.map
+	var center: Vector2 = world.centroid(fid)
+	for attempt in 40:
+		var c: int = map.coast_cells[world.rng.randi_range(0, map.coast_cells.size() - 1)]
+		var o: int = world.owner[c]
+		if o == fid:
+			continue
+		if o != 0 and (world.factions[o]["kind"] != world.Kind.CITY or (world.factions[o]["troops"] > world.factions[fid]["troops"] * 0.3)):
+			continue
+		if Vector2(map.cell(c)).distance_to(center) > Rules.NAVAL_REACH:
+			continue
+		return c
+	return -1

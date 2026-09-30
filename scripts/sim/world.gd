@@ -1,49 +1,94 @@
 extends RefCounted
 ## Territorial simulation. Every cell has an owner (0 = nobody). Factions grow troops and gold,
-## an attack moves a front cell by cell and pays troops for every captured cell. All player
-## intents go through apply(action) - the same dictionaries will travel over the network later.
+## an attack moves a front cell by cell and pays troops for every captured cell. Ships carry
+## landings across the sea, missiles turn land to ash. All player intents go through apply(action),
+## the same dictionaries will travel over the network later.
 ##
 ## Actions:
-##   {type="attack", player, cell: int, ratio: float}          attack whoever owns the cell
-##   {type="build",  player, kind: "city"|"port"|"defense", cell: int}
+##   {type="spawn",  player, cell}                                 pick the starting point
+##   {type="attack", player, cell, ratio}                          attack whoever owns the cell
+##   {type="cancel", player, target}                               call an attack off
+##   {type="build",  player, kind: "city"|"port"|"defense", cell}
+##   {type="nuke",   player, cell, mega: bool}
 
 const Rules := preload("res://scripts/sim/rules.gd")
 const Names := preload("res://scripts/sim/names.gd")
 const BotBrain := preload("res://scripts/sim/bot_brain.gd")
 
 enum Kind { HUMAN, BOT, CITY }
+enum Phase { SPAWN, PLAY, FINISHED }
 
 signal territory_changed
 signal building_placed(faction_id: int, kind: String, cell: int)
 signal building_removed(cell: int)
 signal attack_launched(faction_id: int, target_id: int, cell: int, troops: float)
+signal ship_launched(faction_id: int, from_cell: int, to_cell: int, ticks: int)
+signal ship_landed(faction_id: int, cell: int, success: bool)
+signal nuke_launched(faction_id: int, from_cell: int, to_cell: int, ticks: int, mega: bool)
+signal nuke_detonated(cell: int, radius: int)
 signal faction_eliminated(faction_id: int, by: int)
 signal action_rejected(action: Dictionary, reason: String)
+signal match_started
 signal match_finished(winner_id: int)
 
 var map
 var rng := RandomNumberGenerator.new()
 var tick: int = 0
+var match_start_tick: int = 0
+var phase: int = Phase.SPAWN
+var spawn_ticks_left: int = Rules.SPAWN_SECONDS * Rules.TICKS_PER_SEC
 var owner: PackedByteArray
-var factions: Array = [null]        # index = faction id; 0 = nobody
-var attacks: Array = []             # {attacker, target, troops, queue: Array, queued: Dictionary, head: int}
-var buildings_at: Dictionary = {}   # cell -> {faction, kind}
+var heat: PackedByteArray             # 255 = captured this tick, fades to 0
+var scorch: PackedByteArray           # 255 = just nuked, fades to 0
+var factions: Array = [null]          # index = faction id; 0 = nobody
+var attacks: Array = []               # {attacker, target, troops, queue: Array, queued: Dictionary, head: int}
+var ships: Array = []                 # {attacker, target, troops, cell, from, ticks_left, total}
+var missiles: Array = []              # {player, cell, from, mega, ticks_left}
+var buildings_at: Dictionary = {}     # cell -> {faction, kind}
+var scorched: Dictionary = {}         # cell -> tick when it heals
 var human: int = 1
-var finished := false
 var bots_enabled := true
 var dirty := false
+var heat_dirty := false
+var scorch_dirty := false
+var _spawns: Array = []
+var _captured_now := PackedInt32Array()
+var _recent: Array = []               # ring of PackedInt32Array, newest first
 
 
-func _init(m, game_seed: int) -> void:
+func _init(m, game_seed: int, human_name: String = "Вы") -> void:
 	map = m
 	rng.seed = game_seed
 	owner = PackedByteArray()
 	owner.resize(map.size())
-	_spawn_all()
+	heat = PackedByteArray()
+	heat.resize(map.size())
+	scorch = PackedByteArray()
+	scorch.resize(map.size())
+	var me := _new_faction(human_name, Color(0.93, 0.33, 0.33), Kind.HUMAN)
+	me["troops"] = float(Rules.START_TROOPS)
+	var used := {}
+	for i in Rules.NUM_BOTS:
+		var f := _new_faction(Names.bot_name(rng, used), Color.from_hsv(fmod(0.11 + i * 0.618034, 1.0), 0.62, 0.86), Kind.BOT)
+		_spawn_blob(f, Rules.SPAWN_RADIUS, _find_spawn(Rules.SPAWN_RADIUS))
+		f["troops"] = float(Rules.START_TROOPS)
+	for i in Rules.NUM_CITY_STATES:
+		var f := _new_faction(Names.city_name(rng, used), Color(0.60, 0.60, 0.62), Kind.CITY)
+		var radius := rng.randi_range(Rules.CITY_STATE_RADIUS_MIN, Rules.CITY_STATE_RADIUS_MAX)
+		_spawn_blob(f, radius, _find_spawn(radius))
+		f["troops"] = float(rng.randi_range(Rules.CITY_STATE_TROOPS_MIN, Rules.CITY_STATE_TROOPS_MAX))
+		f["base_troops"] = f["troops"]
+	dirty = true
 
 
 func seconds() -> float:
-	return tick * Rules.TICK_DT
+	if phase == Phase.SPAWN:
+		return 0.0
+	return (tick - match_start_tick) * Rules.TICK_DT
+
+
+func spawn_seconds_left() -> float:
+	return spawn_ticks_left * Rules.TICK_DT
 
 
 # ------------------------------------------------------------------ spawning
@@ -53,7 +98,7 @@ func _new_faction(name: String, color: Color, kind: int) -> Dictionary:
 		"id": factions.size(), "name": name, "color": color, "kind": kind,
 		"troops": 0.0, "gold": 0.0, "base_troops": 0.0,
 		"cells": 0, "sum_x": 0.0, "sum_y": 0.0,
-		"cities": 0, "ports": 0, "defense": 0,
+		"cities": 0, "ports": 0, "defense": 0, "nukes": 0,
 		"alive": true, "border": {}, "spawn": -1,
 		"attack_size": Rules.DEFAULT_ATTACK_SIZE,
 	}
@@ -61,59 +106,41 @@ func _new_faction(name: String, color: Color, kind: int) -> Dictionary:
 	return f
 
 
-func _spawn_all() -> void:
-	var used := {}
-	var spawns: Array = []
-	var me := _new_faction("Вы", Color(0.93, 0.33, 0.33), Kind.HUMAN)
-	_spawn_blob(me, Rules.SPAWN_RADIUS, spawns)
-	me["troops"] = float(Rules.START_TROOPS)
-	for i in Rules.NUM_BOTS:
-		var f := _new_faction(Names.bot_name(rng, used), Color.from_hsv(fmod(0.11 + i * 0.618034, 1.0), 0.62, 0.86), Kind.BOT)
-		_spawn_blob(f, Rules.SPAWN_RADIUS, spawns)
-		f["troops"] = float(Rules.START_TROOPS)
-	for i in Rules.NUM_CITY_STATES:
-		var f := _new_faction(Names.city_name(rng, used), Color(0.60, 0.60, 0.62), Kind.CITY)
-		_spawn_blob(f, rng.randi_range(Rules.CITY_STATE_RADIUS_MIN, Rules.CITY_STATE_RADIUS_MAX), spawns)
-		f["troops"] = float(rng.randi_range(Rules.CITY_STATE_TROOPS_MIN, Rules.CITY_STATE_TROOPS_MAX))
-		f["base_troops"] = f["troops"]
-	dirty = true
+func _blob_ok(center: int, radius: int, min_distance: float) -> bool:
+	var t: int = map.terrain[center]
+	if t != map.GRASS and t != map.SAND:
+		return false
+	var c: Vector2i = map.cell(center)
+	if c.x < 12 or c.y < 12 or c.x > map.width - 13 or c.y > map.height - 13:
+		return false
+	for s in _spawns:
+		if (s - c).length_squared() < min_distance * min_distance:
+			return false
+	var land_n := 0
+	var total := 0
+	for dy in range(-radius, radius + 1):
+		for dx in range(-radius, radius + 1):
+			if dx * dx + dy * dy > radius * radius:
+				continue
+			total += 1
+			var j: int = map.index(c + Vector2i(dx, dy))
+			if map.is_land(j) and owner[j] == 0:
+				land_n += 1
+	return land_n >= total * 0.6
 
 
-func _spawn_blob(f: Dictionary, radius: int, spawns: Array) -> void:
-	var center := -1
-	var min_d2 := Rules.MIN_SPAWN_DISTANCE * Rules.MIN_SPAWN_DISTANCE
+func _find_spawn(radius: int) -> int:
 	for attempt in 4000:
 		var i: int = map.land_cells[rng.randi_range(0, map.land_cells.size() - 1)]
-		var t: int = map.terrain[i]
-		if t != map.GRASS and t != map.SAND:
-			continue
-		var c: Vector2i = map.cell(i)
-		if c.x < 12 or c.y < 12 or c.x > map.width - 13 or c.y > map.height - 13:
-			continue
-		var ok := true
-		for s in spawns:
-			if (s - c).length_squared() < min_d2:
-				ok = false
-				break
-		if not ok:
-			continue
-		var land_n := 0
-		var total := 0
-		for dy in range(-radius, radius + 1):
-			for dx in range(-radius, radius + 1):
-				if dx * dx + dy * dy > radius * radius:
-					continue
-				total += 1
-				var j: int = map.index(c + Vector2i(dx, dy))
-				if map.is_land(j) and owner[j] == 0:
-					land_n += 1
-		if land_n < total * 0.6:
-			continue
-		center = i
-		break
-	assert(center != -1, "no spawn location found")
+		if _blob_ok(i, radius, Rules.MIN_SPAWN_DISTANCE):
+			return i
+	assert(false, "no spawn location found")
+	return map.land_cells[0]
+
+
+func _spawn_blob(f: Dictionary, radius: int, center: int) -> void:
 	var cc: Vector2i = map.cell(center)
-	spawns.append(cc)
+	_spawns.append(cc)
 	f["spawn"] = center
 	for dy in range(-radius, radius + 1):
 		for dx in range(-radius, radius + 1):
@@ -122,6 +149,35 @@ func _spawn_blob(f: Dictionary, radius: int, spawns: Array) -> void:
 			var j: int = map.index(cc + Vector2i(dx, dy))
 			if map.is_land(j) and owner[j] == 0:
 				_set_owner(j, f["id"])
+
+
+## Human picks a starting point. Returns "" or a reason.
+func spawn_human(cell: int) -> String:
+	if phase != Phase.SPAWN:
+		return "Матч уже идёт"
+	if cell < 0 or cell >= owner.size() or not map.is_land(cell):
+		return "Старт возможен только на суше"
+	if owner[cell] != 0:
+		return "Эта земля уже занята"
+	if not _blob_ok(cell, Rules.SPAWN_RADIUS, Rules.MIN_SPAWN_DISTANCE * 0.6):
+		return "Слишком близко к чужим владениям или к краю карты"
+	_spawn_blob(factions[human], Rules.SPAWN_RADIUS, cell)
+	_start_match()
+	return ""
+
+
+func auto_spawn_human() -> void:
+	if phase != Phase.SPAWN:
+		return
+	_spawn_blob(factions[human], Rules.SPAWN_RADIUS, _find_spawn(Rules.SPAWN_RADIUS))
+	_start_match()
+
+
+func _start_match() -> void:
+	phase = Phase.PLAY
+	match_start_tick = tick
+	dirty = true
+	match_started.emit()
 
 
 # ------------------------------------------------------------------ ownership bookkeeping
@@ -148,6 +204,8 @@ func _set_owner(i: int, new_owner: int) -> void:
 	_refresh_border(i)
 	for n in map.neighbors(i):
 		_refresh_border(n)
+	if phase == Phase.PLAY:
+		_captured_now.append(i)
 	dirty = true
 
 
@@ -184,8 +242,17 @@ func _remove_building(cell: int) -> void:
 func centroid(fid: int) -> Vector2:
 	var f: Dictionary = factions[fid]
 	if f["cells"] == 0:
+		if f["spawn"] < 0:
+			return Vector2(map.width, map.height) / 2.0
 		return Vector2(map.cell(f["spawn"])) + Vector2(0.5, 0.5)
 	return Vector2(f["sum_x"] / f["cells"] + 0.5, f["sum_y"] / f["cells"] + 0.5)
+
+
+func centroid_cell(fid: int) -> int:
+	var c := Vector2i(centroid(fid).floor())
+	c.x = clampi(c.x, 0, map.width - 1)
+	c.y = clampi(c.y, 0, map.height - 1)
+	return map.index(c)
 
 
 # ------------------------------------------------------------------ queries
@@ -211,6 +278,8 @@ func gold_rate_of(fid: int) -> float:
 
 func capture_cost(attacker: int, target: int, cell: int) -> float:
 	var mult := Rules.terrain_mult(map.terrain[cell]) * Rules.empire_mult(factions[attacker]["cells"])
+	if scorched.has(cell):
+		mult *= Rules.SCORCH_COST_MULT
 	if target == 0:
 		return Rules.CAPTURE_COST_EMPTY * mult
 	var d: Dictionary = factions[target]
@@ -264,24 +333,74 @@ func has_attack(fid: int, target: int) -> bool:
 	return false
 
 
+func attacks_of(fid: int) -> Array:
+	var out: Array = []
+	for a in attacks:
+		if a["attacker"] == fid:
+			out.append(a)
+	return out
+
+
+func incoming_attacks(fid: int) -> Array:
+	var out: Array = []
+	for a in attacks:
+		if a["target"] == fid:
+			out.append(a)
+	return out
+
+
+func ships_of(fid: int) -> Array:
+	var out: Array = []
+	for s in ships:
+		if s["attacker"] == fid:
+			out.append(s)
+	return out
+
+
+func nearest_coast_cell(fid: int, to_cell: int) -> int:
+	var target := Vector2(map.cell(to_cell))
+	var best := -1
+	var best_d := INF
+	for i in factions[fid]["border"]:
+		if map.is_coast(i):
+			var d := Vector2(map.cell(i)).distance_squared_to(target)
+			if d < best_d:
+				best_d = d
+				best = i
+	return best
+
+
 # ------------------------------------------------------------------ time
 
 func step() -> void:
-	if finished:
+	if phase == Phase.FINISHED:
 		return
 	tick += 1
+	if phase == Phase.SPAWN:
+		spawn_ticks_left -= 1
+		if spawn_ticks_left <= 0:
+			auto_spawn_human()
+		if dirty:
+			dirty = false
+			territory_changed.emit()
+		return
 	_grow()
+	_advance_ships()
+	_advance_missiles()
 	_advance_attacks()
 	if bots_enabled:
 		for id in range(1, factions.size()):
 			var f: Dictionary = factions[id]
 			if f["kind"] == Kind.BOT and f["alive"] and (tick + id * 7) % Rules.BOT_PERIOD_TICKS == 0:
 				BotBrain.think(self, id)
+	if tick % 5 == 0:
+		_decay_scorch()
+	_update_heat()
 	if dirty:
 		dirty = false
 		territory_changed.emit()
 	if seconds() >= Rules.MATCH_SECONDS:
-		finished = true
+		phase = Phase.FINISHED
 		match_finished.emit(leader())
 
 
@@ -295,6 +414,38 @@ func _grow() -> void:
 			f["troops"] = minf(cap, f["troops"] + growth_of(id) * Rules.TICK_DT)
 		if f["kind"] != Kind.CITY:
 			f["gold"] += gold_rate_of(id) * Rules.TICK_DT
+
+
+func _update_heat() -> void:
+	if _captured_now.is_empty() and _recent.is_empty():
+		return
+	_recent.push_front(_captured_now)
+	_captured_now = PackedInt32Array()
+	if _recent.size() > Rules.HEAT_TICKS:
+		var oldest: PackedInt32Array = _recent.pop_back()
+		for c in oldest:
+			heat[c] = 0
+	for age in _recent.size():
+		var v := 255 - int(255.0 * age / Rules.HEAT_TICKS)
+		for c in _recent[age]:
+			heat[c] = v
+	heat_dirty = true
+
+
+func _decay_scorch() -> void:
+	if scorched.is_empty():
+		return
+	var healed: Array = []
+	for c in scorched:
+		var remaining: int = scorched[c] - tick
+		if remaining <= 0:
+			healed.append(c)
+			scorch[c] = 0
+		else:
+			scorch[c] = clampi(int(255.0 * remaining / Rules.SCORCH_TICKS), 1, 255)
+	for c in healed:
+		scorched.erase(c)
+	scorch_dirty = true
 
 
 func _advance_attacks() -> void:
@@ -342,6 +493,70 @@ func _advance_attacks() -> void:
 			i += 1
 
 
+func _advance_ships() -> void:
+	var i := 0
+	while i < ships.size():
+		var s: Dictionary = ships[i]
+		s["ticks_left"] -= 1
+		if s["ticks_left"] > 0:
+			i += 1
+			continue
+		var att: int = s["attacker"]
+		var ok: bool = factions[att]["alive"] and owner[s["cell"]] == s["target"] and (s["target"] == 0 or factions[s["target"]]["alive"])
+		if ok:
+			_add_attack(att, s["target"], s["troops"], [s["cell"]])
+		elif factions[att]["alive"]:
+			factions[att]["troops"] += s["troops"]
+		ship_landed.emit(att, s["cell"], ok)
+		ships.remove_at(i)
+
+
+func _advance_missiles() -> void:
+	var i := 0
+	while i < missiles.size():
+		var m: Dictionary = missiles[i]
+		m["ticks_left"] -= 1
+		if m["ticks_left"] > 0:
+			i += 1
+			continue
+		_detonate(m)
+		missiles.remove_at(i)
+
+
+func _detonate(m: Dictionary) -> void:
+	var radius: int = Rules.MEGA_NUKE_RADIUS if m["mega"] else Rules.NUKE_RADIUS
+	var center: Vector2i = map.cell(m["cell"])
+	var density := {}
+	var lost := {}
+	for id in range(1, factions.size()):
+		density[id] = factions[id]["troops"] / maxf(1.0, float(factions[id]["cells"]))
+	for dy in range(-radius, radius + 1):
+		for dx in range(-radius, radius + 1):
+			if dx * dx + dy * dy > radius * radius:
+				continue
+			var c := center + Vector2i(dx, dy)
+			if not map.in_bounds(c):
+				continue
+			var j: int = map.index(c)
+			if not map.is_land(j):
+				continue
+			var o: int = owner[j]
+			if o != 0:
+				lost[o] = lost.get(o, 0) + 1
+				_set_owner(j, 0)
+			else:
+				_captured_now.append(j)
+			scorched[j] = tick + Rules.SCORCH_TICKS
+			scorch[j] = 255
+	scorch_dirty = true
+	for o in lost:
+		var f: Dictionary = factions[o]
+		f["troops"] = maxf(0.0, f["troops"] - lost[o] * density[o] * Rules.NUKE_TROOP_FACTOR)
+		if f["cells"] == 0 and f["alive"]:
+			_eliminate(o, m["player"])
+	nuke_detonated.emit(m["cell"], radius)
+
+
 func _eliminate(fid: int, by: int) -> void:
 	var f: Dictionary = factions[fid]
 	f["alive"] = false
@@ -352,6 +567,22 @@ func _eliminate(fid: int, by: int) -> void:
 
 # ------------------------------------------------------------------ actions
 
+func _add_attack(fid: int, target: int, troops: float, cells: Array) -> void:
+	for a in attacks:
+		if a["attacker"] == fid and a["target"] == target:
+			a["troops"] += troops
+			for c in cells:
+				if not a["queued"].has(c):
+					a["queued"][c] = true
+					a["queue"].append(c)
+			return
+	var queued := {}
+	for c in cells:
+		queued[c] = true
+	attacks.append({"attacker": fid, "target": target, "troops": troops, "queue": cells.duplicate(), "queued": queued, "head": 0})
+	attack_launched.emit(fid, target, cells[0], troops)
+
+
 func launch_attack(fid: int, target: int, ratio: float, cell: int = -1) -> String:
 	var f: Dictionary = factions[fid]
 	if target == fid:
@@ -361,30 +592,45 @@ func launch_attack(fid: int, target: int, ratio: float, cell: int = -1) -> Strin
 	var amount: float = f["troops"] * clampf(ratio, 0.01, 1.0)
 	if amount < Rules.ATTACK_MIN_TROOPS:
 		return "Слишком мало войск"
-	for a in attacks:
-		if a["attacker"] == fid and a["target"] == target:
-			f["troops"] -= amount
-			a["troops"] += amount
-			return ""
-	var queue: Array = []
+	var front: Array = []
 	var queued := {}
 	for i in f["border"]:
 		for n in map.neighbors(i):
 			if owner[n] == target and map.is_land(n) and not queued.has(n):
 				queued[n] = true
-				queue.append(n)
-	if queue.is_empty():
-		if cell >= 0 and f["ports"] > 0 and map.is_coast(cell) and owner[cell] == target:
-			queued[cell] = true
-			queue.append(cell)          # naval landing
-		elif cell >= 0 and map.is_coast(cell) and f["ports"] == 0:
-			return "Нет общей границы: для высадки с моря нужен порт"
+				front.append(n)
+	var far_click: bool = cell >= 0 and not queued.has(cell)
+	if far_click and map.is_coast(cell):
+		var from := nearest_coast_cell(fid, cell)
+		if f["ports"] == 0:
+			if front.is_empty():
+				return "Нет общей границы: для высадки с моря нужен порт"
+		elif from == -1:
+			return "У вас нет берега для отплытия"
 		else:
-			return "Нет общей границы"
+			var dist := Vector2(map.cell(from)).distance_to(Vector2(map.cell(cell)))
+			if dist > Rules.NAVAL_REACH:
+				return "Слишком далеко для высадки"
+			f["troops"] -= amount
+			var ticks := maxi(5, int(dist / Rules.SHIP_SPEED))
+			ships.append({"attacker": fid, "target": target, "troops": amount, "cell": cell, "from": from, "ticks_left": ticks, "total": ticks})
+			ship_launched.emit(fid, from, cell, ticks)
+			return ""
+	if front.is_empty():
+		return "Нет общей границы"
 	f["troops"] -= amount
-	attacks.append({"attacker": fid, "target": target, "troops": amount, "queue": queue, "queued": queued, "head": 0})
-	attack_launched.emit(fid, target, queue[0], amount)
+	_add_attack(fid, target, amount, front)
 	return ""
+
+
+func cancel_attack(fid: int, target: int) -> String:
+	for i in attacks.size():
+		var a: Dictionary = attacks[i]
+		if a["attacker"] == fid and a["target"] == target:
+			factions[fid]["troops"] += a["troops"]
+			attacks.remove_at(i)
+			return ""
+	return "Такой атаки нет"
 
 
 func building_cost(kind: String, fid: int = 0) -> int:
@@ -406,6 +652,10 @@ func building_cost(kind: String, fid: int = 0) -> int:
 			base = Rules.COST_PORT
 		"defense":
 			base = Rules.COST_DEFENSE
+		"nuke":
+			return Rules.NUKE_COST
+		"mega":
+			return Rules.MEGA_NUKE_COST
 	return int(base * (1.0 + Rules.COST_ESCALATION * owned))
 
 
@@ -419,9 +669,13 @@ func apply(a: Dictionary) -> Dictionary:
 func _apply(a: Dictionary) -> String:
 	var fid: int = a["player"]
 	var f: Dictionary = factions[fid]
+	if a["type"] == "spawn":
+		return spawn_human(a["cell"])
+	if phase == Phase.SPAWN:
+		return "Сначала выберите точку старта"
 	if not f["alive"]:
 		return "Вы выбыли из игры"
-	if finished:
+	if phase == Phase.FINISHED:
 		return "Матч окончен"
 	match a["type"]:
 		"attack":
@@ -433,6 +687,8 @@ func _apply(a: Dictionary) -> String:
 			if not map.is_land(c):
 				return "Сюда нельзя: вода"
 			return launch_attack(fid, owner[c], a["ratio"], c)
+		"cancel":
+			return cancel_attack(fid, a["target"])
 		"build":
 			var c: int = a["cell"]
 			var kind: String = a["kind"]
@@ -457,5 +713,19 @@ func _apply(a: Dictionary) -> String:
 					f["defense"] += 1
 			buildings_at[c] = {"faction": fid, "kind": kind}
 			building_placed.emit(fid, kind, c)
+			return ""
+		"nuke":
+			var c: int = a["cell"]
+			var mega: bool = a.get("mega", false)
+			if c < 0 or c >= owner.size() or not map.is_land(c):
+				return "Цель должна быть на суше"
+			var cost := building_cost("mega" if mega else "nuke", fid)
+			if f["gold"] < cost:
+				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
+			f["gold"] -= cost
+			f["nukes"] += 1
+			var from := centroid_cell(fid)
+			missiles.append({"player": fid, "cell": c, "from": from, "mega": mega, "ticks_left": Rules.NUKE_FLIGHT_TICKS})
+			nuke_launched.emit(fid, from, c, Rules.NUKE_FLIGHT_TICKS, mega)
 			return ""
 	return "Неизвестное действие"

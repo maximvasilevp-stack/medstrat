@@ -1,10 +1,14 @@
 extends Sprite2D
-## Draws the whole map with one shader: terrain + territory colours + borders.
+## Draws the whole map with one shader: terrain + territory colours + borders + capture glow + ash.
 
 var map
 var world
 var owner_img: Image
 var owner_tex: ImageTexture
+var heat_img: Image
+var heat_tex: ImageTexture
+var scorch_img: Image
+var scorch_tex: ImageTexture
 var palette_img: Image
 var palette_tex: ImageTexture
 var mat: ShaderMaterial
@@ -18,6 +22,10 @@ func _init(m, w) -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	owner_img = Image.create_from_data(map.width, map.height, false, Image.FORMAT_R8, world.owner)
 	owner_tex = ImageTexture.create_from_image(owner_img)
+	heat_img = Image.create_from_data(map.width, map.height, false, Image.FORMAT_R8, world.heat)
+	heat_tex = ImageTexture.create_from_image(heat_img)
+	scorch_img = Image.create_from_data(map.width, map.height, false, Image.FORMAT_R8, world.scorch)
+	scorch_tex = ImageTexture.create_from_image(scorch_img)
 	palette_img = Image.create_empty(256, 1, false, Image.FORMAT_RGBA8)
 	palette_img.fill(Color(0.5, 0.5, 0.5, 1.0))
 	for id in range(1, world.factions.size()):
@@ -27,6 +35,8 @@ func _init(m, w) -> void:
 	mat.shader = load("res://shaders/map.gdshader")
 	mat.set_shader_parameter("terrain_tex", map.terrain_texture)
 	mat.set_shader_parameter("owner_tex", owner_tex)
+	mat.set_shader_parameter("heat_tex", heat_tex)
+	mat.set_shader_parameter("scorch_tex", scorch_tex)
 	mat.set_shader_parameter("palette", palette_tex)
 	mat.set_shader_parameter("map_size", Vector2i(map.width, map.height))
 	mat.set_shader_parameter("human_id", world.human)
@@ -37,6 +47,17 @@ func _init(m, w) -> void:
 func refresh_owner() -> void:
 	owner_img.set_data(map.width, map.height, false, Image.FORMAT_R8, world.owner)
 	owner_tex.update(owner_img)
+
+
+func _process(_delta: float) -> void:
+	if world.heat_dirty:
+		world.heat_dirty = false
+		heat_img.set_data(map.width, map.height, false, Image.FORMAT_R8, world.heat)
+		heat_tex.update(heat_img)
+	if world.scorch_dirty:
+		world.scorch_dirty = false
+		scorch_img.set_data(map.width, map.height, false, Image.FORMAT_R8, world.scorch)
+		scorch_tex.update(scorch_img)
 
 
 func set_hover_owner(id: int) -> void:

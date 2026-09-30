@@ -5,6 +5,8 @@ shader_type canvas_item;
 uniform sampler2D terrain_tex : filter_nearest, repeat_disable;
 uniform sampler2D owner_tex : filter_nearest, repeat_disable;
 uniform sampler2D palette : filter_nearest, repeat_disable;
+uniform sampler2D heat_tex : filter_nearest, repeat_disable;
+uniform sampler2D scorch_tex : filter_nearest, repeat_disable;
 uniform ivec2 map_size = ivec2(640, 768);
 uniform int human_id = 1;
 uniform int hover_owner = 0;
@@ -77,6 +79,14 @@ void fragment() {
 		if (o == hover_owner) {
 			col = mix(col, vec3(1.0), 0.12);
 		}
+	}
+	float sc = texelFetch(scorch_tex, c, 0).r;
+	if (sc > 0.0 && t >= 2 && t <= 6) {
+		col = mix(col, vec3(0.17, 0.15, 0.14) + vec3(hash(c) * 0.05), sc * 0.85);
+	}
+	float h = texelFetch(heat_tex, c, 0).r;
+	if (h > 0.0) {
+		col = mix(col, vec3(1.0, 0.97, 0.75), h * 0.75);
 	}
 	COLOR = vec4(col, 1.0);
 }

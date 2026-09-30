@@ -17,6 +17,7 @@ var terrain: PackedByteArray
 var coast: PackedByteArray          # 1 = playable land touching the sea
 var land_total: int = 0
 var land_cells: PackedInt32Array    # indices of all playable land cells
+var coast_cells: PackedInt32Array   # indices of playable land cells touching the sea
 var terrain_texture: ImageTexture
 
 
@@ -32,11 +33,15 @@ func _init(dir: String = "res://assets/map/") -> void:
 	assert(terrain.size() == width * height and coast.size() == width * height, "map data size mismatch")
 	terrain_texture = ImageTexture.create_from_image(Image.create_from_data(width, height, false, Image.FORMAT_R8, terrain))
 	var cells := PackedInt32Array()
+	var coasts := PackedInt32Array()
 	for i in width * height:
 		var t := terrain[i]
 		if t >= GRASS and t <= RIVER:
 			cells.append(i)
+			if coast[i] == 1:
+				coasts.append(i)
 	land_cells = cells
+	coast_cells = coasts
 
 
 func size() -> int:

@@ -23,10 +23,15 @@ func check(cond: bool, msg: String) -> void:
 func _init() -> void:
 	map = MapData.new()
 	test_map()
+	test_spawn_phase()
 	test_spawn()
 	test_growth()
 	test_attack_empty()
+	test_heat()
+	test_cancel()
 	test_attack_enemy()
+	test_naval()
+	test_nuke()
 	test_buildings()
 	test_ranking_and_names()
 	test_determinism()
@@ -46,6 +51,7 @@ func _process(_delta: float) -> bool:
 func _quiet(seed: int) -> Variant:
 	var w = World.new(map, seed)
 	w.bots_enabled = false
+	w.auto_spawn_human()
 	return w
 
 
@@ -57,20 +63,53 @@ func _empty_neighbour(w, fid: int) -> int:
 	return -1
 
 
+func _first_city_state(w) -> int:
+	for id in range(1, w.factions.size()):
+		if w.factions[id]["kind"] == w.Kind.CITY:
+			return id
+	return 0
+
+
 func test_map() -> void:
 	check(map.width == 640 and map.height == 768, "map size 640x768")
 	check(map.terrain.size() == map.size() and map.coast.size() == map.size(), "data sizes")
 	check(map.land_cells.size() == map.land_total, "land cell list matches land_total")
+	check(map.coast_cells.size() > 5000, "coast cell list (%d)" % map.coast_cells.size())
 	var rome: int = map.index(Vector2i(int((12.5 + 11.0) * cos(deg_to_rad(49.0)) / (44.0 / 768.0)), int((71.0 - 41.9) / (44.0 / 768.0))))
 	check(map.is_land(rome), "Rome is land")
 	check(not map.is_land(0) and map.is_sea(0), "top-left corner is sea")
-	var coast_count := 0
-	for i in map.size():
-		if map.coast[i] == 1:
-			coast_count += 1
-			if coast_count < 200:
-				check(map.is_land(i), "coast cells are land")
-	check(coast_count > 5000, "coast has many cells (%d)" % coast_count)
+	for k in 200:
+		var i: int = map.coast_cells[k * 37 % map.coast_cells.size()]
+		check(map.is_land(i) and map.is_coast(i), "coast cells are land and flagged")
+
+
+func test_spawn_phase() -> void:
+	var w = World.new(map, 4)
+	w.bots_enabled = false
+	check(w.phase == w.Phase.SPAWN, "world starts in the spawn phase")
+	check(w.factions[1]["cells"] == 0, "human has no land before choosing")
+	var troops0: float = w.factions[2]["troops"]
+	for i in 5:
+		w.step()
+	check(is_equal_approx(w.factions[2]["troops"], troops0), "nothing grows while waiting for the spawn")
+	check(w.spawn_human(0) != "", "no spawn on water")
+	check(w.spawn_human(w.factions[2]["spawn"]) != "", "no spawn on occupied land")
+	check(w.apply({"type": "attack", "player": 1, "cell": map.land_cells[0], "ratio": 0.5})["reason"].begins_with("Сначала"), "no attacks before spawning")
+	var free := -1
+	for k in 500:
+		var c: int = map.land_cells[(k * 7919) % map.land_cells.size()]
+		if w._blob_ok(c, Rules.SPAWN_RADIUS, Rules.MIN_SPAWN_DISTANCE * 0.6):
+			free = c
+			break
+	check(free != -1 and w.apply({"type": "spawn", "player": 1, "cell": free})["ok"], "spawn on free land accepted")
+	check(w.phase == w.Phase.PLAY and w.factions[1]["cells"] > 40, "match started with a starting blob")
+	check(is_equal_approx(w.seconds(), 0.0), "match clock starts at zero")
+	var w2 = World.new(map, 4)
+	w2.bots_enabled = false
+	w2.spawn_ticks_left = 3
+	for i in 3:
+		w2.step()
+	check(w2.phase == w2.Phase.PLAY and w2.factions[1]["cells"] > 0, "countdown places the human automatically")
 
 
 func test_spawn() -> void:
@@ -110,11 +149,7 @@ func test_growth() -> void:
 	for i in 5000:
 		w.step()
 	check(w.factions[1]["troops"] <= w.max_troops_of(1) + 0.001, "troops capped at max")
-	var cs := 0
-	for id in range(1, w.factions.size()):
-		if w.factions[id]["kind"] == w.Kind.CITY:
-			cs = id
-			break
+	var cs := _first_city_state(w)
 	check(w.factions[cs]["troops"] <= w.factions[cs]["base_troops"] * Rules.CITY_STATE_MAX_MULT + 0.001, "city-state troops capped")
 
 
@@ -142,14 +177,38 @@ func test_attack_empty() -> void:
 	check(w.factions[1]["troops"] >= 0.0, "troops never negative")
 
 
+func test_heat() -> void:
+	var w = _quiet(21)
+	w.apply({"type": "attack", "player": 1, "cell": _empty_neighbour(w, 1), "ratio": 0.5})
+	w.step()
+	var hot := -1
+	for i in w.owner.size():
+		if w.heat[i] == 255:
+			hot = i
+			break
+	check(hot != -1 and w.owner[hot] == 1, "a freshly captured cell glows at full heat")
+	check(w.heat_dirty, "heat texture flagged dirty")
+	for i in 200:
+		w.step()
+	check(w.attacks.is_empty(), "attack over")
+	for i in Rules.HEAT_TICKS + 2:
+		w.step()
+	check(w.heat[hot] == 0, "heat fades to zero")
+
+
+func test_cancel() -> void:
+	var w = _quiet(22)
+	var troops0: float = w.factions[1]["troops"]
+	check(w.apply({"type": "attack", "player": 1, "cell": _empty_neighbour(w, 1), "ratio": 0.4})["ok"], "attack launched")
+	check(w.factions[1]["troops"] < troops0, "troops left home")
+	check(not w.apply({"type": "cancel", "player": 1, "target": 5})["ok"], "cancelling a missing attack is rejected")
+	check(w.apply({"type": "cancel", "player": 1, "target": 0})["ok"], "attack cancelled")
+	check(is_equal_approx(w.factions[1]["troops"], troops0) and w.attacks.is_empty(), "troops came back home")
+
+
 func test_attack_enemy() -> void:
 	var w = _quiet(8)
-	var cs := 0
-	for id in range(1, w.factions.size()):
-		if w.factions[id]["kind"] == w.Kind.CITY:
-			cs = id
-			break
-	# make the human touch the city-state by handing over a neighbouring cell
+	var cs := _first_city_state(w)
 	var bridge := -1
 	for i in w.factions[cs]["border"]:
 		for n in map.neighbors(i):
@@ -170,12 +229,83 @@ func test_attack_enemy() -> void:
 	w.step()
 	check(w.factions[cs]["cells"] < cs_cells0, "city-state loses cells")
 	check(w.factions[cs]["troops"] < cs_troops0, "defenders lose troops")
-	for i in 300:
+	for i in 400:
 		w.step()
 	check(not w.factions[cs]["alive"] and w.factions[cs]["cells"] == 0, "city-state eliminated")
 	check(eliminated["by"] == 1, "elimination signal names the attacker")
 	check(w.attacks.is_empty(), "attack ended after elimination")
 	check(not w.apply({"type": "attack", "player": cs, "cell": bridge, "ratio": 0.5})["ok"], "dead faction cannot act")
+
+
+func test_naval() -> void:
+	var w = null
+	for seed in range(12, 60):
+		var cand = _quiet(seed)
+		var has_coast := false
+		for i in cand.factions[1]["border"]:
+			if map.is_coast(i):
+				has_coast = true
+				break
+		if has_coast:
+			w = cand
+			break
+	check(w != null, "found a seed where the human spawns on a coast")
+	if w == null:
+		return
+	var f: Dictionary = w.factions[1]
+	var center: Vector2 = w.centroid(1)
+	var target := -1
+	for k in map.coast_cells.size():
+		var c: int = map.coast_cells[(k * 104729) % map.coast_cells.size()]
+		var d := Vector2(map.cell(c)).distance_to(center)
+		if w.owner[c] == 0 and d > 25.0 and d < Rules.NAVAL_REACH * 0.8:
+			target = c
+			break
+	check(target != -1, "found a free beach within reach")
+	f["troops"] = 3000.0
+	var r: Dictionary = w.apply({"type": "attack", "player": 1, "cell": target, "ratio": 0.5})
+	check(r["ok"] and w.ships.is_empty() and w.attacks.size() == 1, "without a port a far beach click expands at home instead")
+	w.apply({"type": "cancel", "player": 1, "target": 0})
+	f["ports"] = 1
+	check(w.apply({"type": "attack", "player": 1, "cell": target, "ratio": 0.5})["ok"], "landing with a port accepted")
+	check(w.ships.size() == 1 and w.attacks.is_empty(), "a ship is under way, no land attack yet")
+	if w.ships.is_empty():
+		return
+	var total: int = w.ships[0]["total"]
+	for i in total + 1:
+		w.step()
+	check(w.ships.is_empty() and w.attacks.size() == 1, "ship landed and opened an attack")
+	for i in 30:
+		w.step()
+	check(w.owner[target] == 1, "the beach was captured")
+
+
+func test_nuke() -> void:
+	var w = _quiet(13)
+	var f: Dictionary = w.factions[1]
+	var cs := _first_city_state(w)
+	var center: int = w.centroid_cell(cs)
+	f["gold"] = 0.0
+	check(not w.apply({"type": "nuke", "player": 1, "cell": center, "mega": false})["ok"], "nuke needs gold")
+	f["gold"] = 1000000.0
+	check(not w.apply({"type": "nuke", "player": 1, "cell": 0, "mega": false})["ok"], "nuke needs a land target")
+	var cells0: int = w.factions[cs]["cells"]
+	var troops0: float = w.factions[cs]["troops"]
+	var boom := {"n": 0}
+	w.nuke_detonated.connect(func(_c, _r): boom["n"] += 1)
+	check(w.apply({"type": "nuke", "player": 1, "cell": center, "mega": false})["ok"], "nuke launched")
+	check(w.missiles.size() == 1 and is_equal_approx(f["gold"], 1000000.0 - Rules.NUKE_COST), "missile in flight, gold paid")
+	for i in Rules.NUKE_FLIGHT_TICKS:
+		w.step()
+	check(w.missiles.is_empty() and boom["n"] == 1, "missile detonated")
+	check(w.factions[cs]["cells"] < cells0, "city-state lost land (%d -> %d)" % [cells0, w.factions[cs]["cells"]])
+	check(w.factions[cs]["troops"] < troops0, "city-state lost troops")
+	check(w.scorched.has(center) and w.scorch[center] > 200, "ground is scorched")
+	var plain := Rules.CAPTURE_COST_EMPTY * Rules.empire_mult(f["cells"]) * Rules.terrain_mult(map.terrain[center])
+	check(w.capture_cost(1, 0, center) > plain * 1.5, "scorched land is dearer to take")
+	for i in Rules.SCORCH_TICKS + 10:
+		w.step()
+	check(not w.scorched.has(center) and w.scorch[center] == 0, "scorch heals")
 
 
 func test_buildings() -> void:
@@ -191,21 +321,18 @@ func test_buildings() -> void:
 	check(w.apply({"type": "build", "player": 1, "kind": "city", "cell": spawn})["ok"], "city built")
 	check(w.factions[1]["cities"] == 1 and w.max_troops_of(1) > cap0, "city raises the troop cap")
 	check(is_equal_approx(f["gold"], 100000.0 - Rules.COST_CITY), "gold paid")
+	check(w.building_cost("city", 1) > Rules.COST_CITY, "next city costs more")
 	check(not w.apply({"type": "build", "player": 1, "kind": "port", "cell": spawn})["ok"], "one building per cell")
 	var inland := -1
-	var coast := -1
 	for i in f["border"]:
-		if map.is_coast(i) and coast == -1:
-			coast = i
-		elif not map.is_coast(i) and inland == -1:
+		if not map.is_coast(i):
 			inland = i
+			break
 	if inland != -1:
 		check(not w.apply({"type": "build", "player": 1, "kind": "port", "cell": inland})["ok"], "port needs a coast")
-	var cost0: float = w.capture_cost(2, 1, spawn)
-	check(w.apply({"type": "build", "player": 1, "kind": "defense", "cell": inland if inland != -1 else spawn + 1})["ok"] or true, "defense placed when possible")
-	if w.factions[1]["defense"] == 1:
+		var cost0: float = w.capture_cost(2, 1, spawn)
+		check(w.apply({"type": "build", "player": 1, "kind": "defense", "cell": inland})["ok"], "defense placed")
 		check(w.capture_cost(2, 1, spawn) > cost0, "defense raises capture cost")
-	# losing the cell removes the building
 	var removed := {"n": 0}
 	w.building_removed.connect(func(_c): removed["n"] += 1)
 	w._set_owner(spawn, 0)
@@ -227,15 +354,18 @@ func test_ranking_and_names() -> void:
 	var a := Names.city_name(rng, used)
 	var b := Names.city_name(rng, used)
 	check(a != b and a.length() > 2, "city names are unique")
+	var w2 = World.new(map, 3, "Максим")
+	check(w2.factions[1]["name"] == "Максим", "nickname is used")
 
 
 func test_determinism() -> void:
 	var a = World.new(map, 123)
 	var b = World.new(map, 123)
-	for i in 400:
+	for i in 500:
 		a.step()
 		b.step()
-	check(a.owner == b.owner, "same seed gives the same map after 400 ticks")
+	check(a.phase == a.Phase.PLAY, "auto spawn happened within 500 ticks")
+	check(a.owner == b.owner, "same seed gives the same map after 500 ticks")
 	check(is_equal_approx(a.factions[2]["troops"], b.factions[2]["troops"]), "same troops")
 	var c = World.new(map, 124)
 	check(c.owner != a.owner, "different seed gives a different map")
@@ -243,6 +373,7 @@ func test_determinism() -> void:
 
 func test_soak() -> void:
 	var w = World.new(map, 77)
+	w.auto_spawn_human()
 	var owned0 := 0
 	for id in range(1, w.factions.size()):
 		owned0 += w.factions[id]["cells"]

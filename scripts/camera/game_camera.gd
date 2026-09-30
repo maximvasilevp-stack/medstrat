@@ -18,6 +18,12 @@ var edge_pan_enabled := true
 func _ready() -> void:
 	anchor_mode = Camera2D.ANCHOR_MODE_FIXED_TOP_LEFT
 	_apply_zoom()
+	center_map()
+	get_viewport().size_changed.connect(_clamp_and_snap)
+	center_map.call_deferred()
+
+
+func center_map() -> void:
 	var view := get_viewport_rect().size / _z()
 	position = (map_size - view) / 2.0
 	_clamp_and_snap()

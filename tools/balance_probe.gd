@@ -10,6 +10,7 @@ func _init() -> void:
 	var map = MapData.new()
 	for seed in [11, 42]:
 		var w = World.new(map, seed)
+		w.auto_spawn_human()
 		print("seed %d" % seed)
 		var t := Time.get_ticks_msec()
 		for minute in range(1, 16):
