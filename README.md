@@ -230,13 +230,17 @@ godot --headless --path . --export-release Web docs/play.html
 
 Проверка у себя: `python3 -m http.server 8080 --directory docs` и открыть http://localhost:8080.
 
-Публикация (один раз):
-1. Создайте пустой репозиторий на github.com, например `medstrat`.
-2. В терминале: `git remote add origin git@github.com:ВАШ_НИК/medstrat.git` и `git push -u origin main`.
-3. На GitHub: Settings → Pages → Source: «Deploy from a branch», Branch: `main`, Folder: `/docs` → Save.
-4. Через минуту игра будет по адресу `https://ВАШ_НИК.github.io/medstrat/`.
+Игра опубликована на GitHub Pages: **https://maximvasilevp-stack.github.io/medstrat/**
+(репозиторий https://github.com/maximvasilevp-stack/medstrat, папка `docs`, ветка `main`).
 
-Каждое обновление: пересобрать командой выше, затем `git add docs && git commit -m "web build" && git push`.
+Каждое обновление одной командой: пересобрать веб-версию, закоммитить и отправить на GitHub,
+через минуту сайт обновится:
+
+```bash
+tools/deploy.sh
+```
+
+Временная ссылка с этого Mac (без GitHub): `tools/publish.sh`.
 
 ## Дорожная карта
 
