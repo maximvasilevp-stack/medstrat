@@ -8,7 +8,7 @@ const Rules := preload("res://scripts/sim/rules.gd")
 ## delta: target = base + delta[tier]; abs: target = abs[tier] (whichever the template has)
 const TEMPLATES := {
 	"expand": {"name": "Расширение", "text": "Захватите ещё %d клеток", "stat": "cells", "delta": [120, 300, 700], "gold": [1500, 3000, 6000], "xp": [15, 30, 60]},
-	"cities": {"name": "Урбанизация", "text": "Владейте %d городами", "stat": "cities", "delta": [1, 2, 3], "gold": [2000, 3500, 6000], "xp": [15, 30, 50]},
+	"cities": {"name": "Урбанизация", "text": "Постройте ещё %d город(а)", "stat": "cities", "delta": [1, 2, 3], "gold": [2000, 3500, 6000], "xp": [15, 30, 50]},
 	"bills": {"name": "Законотворец", "text": "Примите ещё %d закона(ов)", "stat": "bills", "delta": [2, 4, 7], "gold": [2000, 4000, 7000], "xp": [15, 30, 50]},
 	"ministers": {"name": "Кабинет", "text": "Наймите ещё %d министра(ов)", "stat": "staff", "delta": [1, 2, 4], "gold": [1500, 3000, 5000], "xp": [10, 25, 40]},
 	"techs": {"name": "Просвещение", "text": "Изучите ещё %d уровня(ей) технологий", "stat": "techs", "delta": [2, 4, 7], "gold": [2500, 5000, 8000], "xp": [15, 30, 55]},

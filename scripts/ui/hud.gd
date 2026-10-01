@@ -1532,11 +1532,11 @@ func _refresh_gov() -> void:
 			var rev_parts: Array = []
 			for k in bd["revenue"]:
 				if float(bd["revenue"][k]) > 0.05:
-					rev_parts.append("%s %s" % [k, Names.short_number(bd["revenue"][k])])
+					rev_parts.append("%s %s" % [k, _money(bd["revenue"][k])])
 			var sp_parts: Array = []
 			for k in bd["spending"]:
 				if float(bd["spending"][k]) > 0.05:
-					sp_parts.append("%s %s" % [k, Names.short_number(bd["spending"][k])])
+					sp_parts.append("%s %s" % [k, _money(bd["spending"][k])])
 			econ_budget.text = "Доходы %s/с (%s) · расходы %s/с (%s) · сальдо %+.1f/с%s" % [Names.short_number(bd["total_revenue"]), ", ".join(rev_parts) if not rev_parts.is_empty() else "—", Names.short_number(bd["total_spending"]), ", ".join(sp_parts) if not sp_parts.is_empty() else "—", bd["balance"], " · дефицит разгоняет инфляцию" if bd["balance"] < 0.0 else ""]
 			var pv: float = Economy.portfolio_value(f)
 			econ_index.text = "Индекс %s: %.1f · ваш портфель %s (вложено %s) · растёт с ВВП и одобрением, падает от войн и рецессий" % [f["name"], float(e["index"]), Names.short_number(pv), Names.short_number(e["invested"])]
@@ -1947,6 +1947,11 @@ func _refresh_autopilot() -> void:
 	autopilot_button.text = ("%s · %d" % [base, n]) if n > 0 else base
 
 
+## Small flows with one decimal, big ones shortened.
+static func _money(v: float) -> String:
+	return ("%.1f" % v) if absf(v) < 100.0 else Names.short_number(v)
+
+
 func _hide_panels() -> void:
 	tech_panel.visible = false
 	people_panel.visible = false
@@ -2303,7 +2308,10 @@ func refresh(delta: float) -> void:
 				timer_label.text = "Вы бесспорный лидер: победа через %d с" % int(ceil(Rules.WIN_LEAD_SECONDS - lead_s))
 			else:
 				timer_bar.value = clampf(share / goal, 0.0, 1.0)
-				timer_label.text = "Победа: %d%% карты или %d%% и вдвое больше второго · у вас %.1f%%" % [int(goal), int(lead_goal), share]
+				if mobile:
+					timer_label.text = "Цель %d%% карты · у вас %.1f%%" % [int(goal), share]
+				else:
+					timer_label.text = "Победа: %d%% карты или %d%% и вдвое больше второго · у вас %.1f%%" % [int(goal), int(lead_goal), share]
 		else:
 			var lead: int = world.leader()
 			timer_bar.value = clampf(world.land_share(lead) * 100.0 / goal, 0.0, 1.0)

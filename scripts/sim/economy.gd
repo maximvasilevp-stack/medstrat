@@ -196,15 +196,15 @@ static func productivity(world, fid: int) -> float:
 	var p: float = 1.0 + levels * 0.02 + infra * 0.04 + f["projects_done"].size() * 0.03
 	var e: Dictionary = f["econ"]
 	if float(e["unemployment"]) > UNEMPLOYMENT_OK:
-		p *= 1.0 - (float(e["unemployment"]) - UNEMPLOYMENT_OK) * 0.5
-	return maxf(0.5, p)
+		p *= 1.0 - (float(e["unemployment"]) - UNEMPLOYMENT_OK) * 0.3
+	return maxf(0.75, p)
 
 
 static func _people_second(world, fid: int, hungry: bool) -> void:
 	var f: Dictionary = world.factions[fid]
 	var e: Dictionary = f["econ"]
 	var pop: float = float(e["pop"])
-	var births: float = pop * BIRTH_RATE * (0.4 if hungry else 1.0) * world.mod(fid, "growth")
+	var births: float = pop * BIRTH_RATE * (0.4 if hungry else 1.0) * world.mod(fid, "growth") * clampf(1.0 - float(e["unemployment"]), 0.3, 1.0)
 	var deaths: float = pop * (DEATH_RATE + (HUNGER_DEATHS if hungry else 0.0))
 	var migration: float = pop * MIGRATION_RATE * (f["approval"] - 50.0) / 50.0
 	if hungry:
