@@ -45,6 +45,7 @@ const Content := preload("res://scripts/sim/content.gd")
 const Resources := preload("res://scripts/sim/resources.gd")
 const Missions := preload("res://scripts/sim/missions.gd")
 const Economy := preload("res://scripts/sim/economy.gd")
+const LivingWorld := preload("res://scripts/sim/living_world.gd")
 
 enum Kind { HUMAN, BOT, CITY }
 enum Phase { SPAWN, PLAY, FINISHED }
@@ -88,6 +89,9 @@ signal news_posted(text: String, kind: String)
 signal economy_event(faction_id: int, text: String)
 signal wonder_built(faction_id: int, wonder: String)
 signal catch_up_changed(active: bool)
+signal era_changed(era: int)
+signal faction_born(faction_id: int, parent_id: int)
+signal spectator_changed(active: bool)
 
 var map
 var rng := RandomNumberGenerator.new()
@@ -113,6 +117,10 @@ var winner_declared: int = 0          # faction that already triggered match_fin
 var lead_since: int = -1              # tick since the current leader has been undisputed
 var wonders: Dictionary = {}          # wonder key -> faction that owns it
 var catch_up := false                 # the human is far behind and gets Rules.CATCH_UP_MODS
+var era: int = 0                      # index into Rules.ERAS
+var spectating := false               # the human's country is run by the AI until control is taken
+var bot_tuning: float = 1.0           # adaptive difficulty multiplier on bot growth and gold
+var persona_weights: Dictionary = {}  # persona -> weight (learned between matches)
 var season: int = 0                   # index into Rules.SEASONS
 var difficulty: int = 1               # index into Rules.DIFFICULTIES
 var scenario: String = "free"        # key in Scenarios.LIST
@@ -165,7 +173,7 @@ func _init(m, game_seed: int, human_name: String = "Вы") -> void:
 		placed += 1
 	for i in Rules.NUM_BOTS:
 		var f := _new_faction(Names.bot_name(rng, used), Color.from_hsv(fmod(0.05 + i * 0.618034, 1.0), 0.48, 0.92), Kind.BOT)
-		f["persona"] = Rules.PERSONA_ORDER[rng.randi_range(0, Rules.PERSONA_ORDER.size() - 1)]
+		f["persona"] = _pick_persona()
 		_spawn_blob(f, Rules.SPAWN_RADIUS, _find_spawn(Rules.SPAWN_RADIUS))
 		f["troops"] = float(Rules.START_TROOPS)
 		f["gold"] = float(Rules.BOT_START_GOLD)
@@ -208,6 +216,30 @@ func _new_faction(name: String, color: Color, kind: int) -> Dictionary:
 	}
 	factions.append(f)
 	return f
+
+
+## Personas that did well in earlier matches are picked a little more often (persona_weights).
+func _pick_persona() -> String:
+	var total := 0.0
+	for key in Rules.PERSONA_ORDER:
+		total += float(persona_weights.get(key, 1.0))
+	var roll: float = rng.randf() * total
+	for key in Rules.PERSONA_ORDER:
+		roll -= float(persona_weights.get(key, 1.0))
+		if roll <= 0.0:
+			return key
+	return Rules.PERSONA_ORDER[Rules.PERSONA_ORDER.size() - 1]
+
+
+## Spectator mode: the AI runs the human's country until the player takes control.
+func set_spectator(on: bool) -> void:
+	spectating = on
+	var h: Dictionary = factions[human]
+	h["kind"] = Kind.BOT if on else Kind.HUMAN
+	if on and h["persona"] == "":
+		h["persona"] = "trader"
+	h["autopilot"] = {}
+	spectator_changed.emit(on)
 
 
 static func _default_reforms() -> Dictionary:
@@ -498,6 +530,8 @@ func mods_of(fid: int) -> Dictionary:
 			Content.merge_mods(m, Rules.WONDERS[key]["mods"])
 	if fid == human and catch_up:
 		Content.merge_mods(m, Rules.CATCH_UP_MODS)
+	if f["kind"] != Kind.CITY:
+		Content.merge_mods(m, Rules.ERAS[era]["mods"])
 	f["mods"] = m
 	f["mods_dirty"] = false
 	return m
@@ -751,8 +785,8 @@ func growth_of(fid: int) -> float:
 		return f["troops"] * Rules.CITY_STATE_INTEREST + 1.0
 	var extra: float = tech_level(fid, "conscription") * Rules.CONSCRIPTION_BONUS + f["barracks"] * Rules.BARRACKS_INTEREST + mod(fid, "interest")
 	var g: float = Rules.growth_per_sec(f["troops"], f["cells"], f["cities"], extra) * approval_factor(fid)
-	if f["kind"] == Kind.BOT:
-		g *= Rules.DIFFICULTIES[difficulty]["bot_growth"]
+	if f["kind"] == Kind.BOT and fid != human:
+		g *= Rules.DIFFICULTIES[difficulty]["bot_growth"] * bot_tuning
 	return g
 
 
@@ -771,8 +805,8 @@ func gold_rate_of(fid: int) -> float:
 	if tick < f["loss_until"]:
 		rate *= Rules.ELECTION_LOSS_GOLD
 	rate = rate * mod(fid, "gold") + mod(fid, "gold_flat")
-	if f["kind"] == Kind.BOT:
-		rate *= Rules.DIFFICULTIES[difficulty]["bot_gold"]
+	if f["kind"] == Kind.BOT and fid != human:
+		rate *= Rules.DIFFICULTIES[difficulty]["bot_gold"] * bot_tuning
 	rate += trade_income(fid) + tribute_of(fid) + Economy.income_tax(f) * mod(fid, "gold")
 	return rate - salaries_of(fid) - budget_cost(fid) - Economy.interest_per_sec(self, fid) - Economy.welfare_cost(f)
 
@@ -1040,6 +1074,8 @@ func step() -> void:
 	if tick % Rules.TICKS_PER_SEC == 0:
 		_check_victory()
 		_tick_season()
+	if tick % LivingWorld.PERIOD_TICKS == 0:
+		LivingWorld.tick(self)
 
 
 func _tick_season() -> void:
@@ -2130,6 +2166,8 @@ func _apply(a: Dictionary) -> String:
 				return "Уже изучено полностью"
 			if t["req"] != "" and tech_level(fid, t["req"]) == 0:
 				return "Сначала изучите: %s" % tech_def(t["req"])["name"]
+			if (key == "nuclear" or key == "rockets") and era < Rules.NUCLEAR_ERA:
+				return "%s откроется в эпоху «%s» (сейчас %s)" % [t["name"], Rules.ERAS[Rules.NUCLEAR_ERA]["name"], Rules.ERAS[era]["name"]]
 			var cost := tech_cost(fid, key)
 			if f["gold"] < cost:
 				return "Не хватает золота (нужно %s)" % Names.short_number(cost)

@@ -49,6 +49,7 @@ func _init() -> void:
 	test_economy_two()
 	test_victory_lead()
 	test_wonders_and_catch_up()
+	test_living_world()
 	test_ranking_and_names()
 	test_determinism()
 	test_soak()
@@ -294,8 +295,13 @@ func test_naval() -> void:
 		var c: int = map.coast_cells[(k * 104729) % map.coast_cells.size()]
 		var d := Vector2(map.cell(c)).distance_to(center)
 		if w.owner[c] == 0 and d > 25.0 and d < Rules.NAVAL_REACH * 0.8:
-			target = c
-			break
+			var free_neighbours := 0
+			for n in map.neighbors(c):
+				if map.is_land(n) and w.owner[n] == 0:
+					free_neighbours += 1
+			if free_neighbours >= 2:
+				target = c
+				break
 	check(target != -1, "found a free beach within reach")
 	f["troops"] = 3000.0
 	var r: Dictionary = w.apply({"type": "attack", "player": 1, "cell": target, "ratio": 0.5})
@@ -392,6 +398,7 @@ func test_tech_and_new_buildings() -> void:
 	check(w.tech_cost(1, "trade") == Rules.TECHS["trade"]["costs"][1], "next level costs more")
 	var r: Dictionary = w.apply({"type": "research", "player": 1, "tech": "rockets"})
 	check(not r["ok"] and r["reason"].contains("Ядерная"), "rockets need the nuclear programme")
+	w.era = Rules.NUCLEAR_ERA
 	check(w.apply({"type": "research", "player": 1, "tech": "nuclear"})["ok"] and w.apply({"type": "research", "player": 1, "tech": "nuclear"})["reason"].begins_with("Уже"), "max level enforced")
 	var free := _empty_neighbour(w, 1)
 	var cost0: float = w.capture_cost(1, 0, free)
@@ -1105,6 +1112,76 @@ func test_wonders_and_catch_up() -> void:
 	check(w.catch_up and w.mod(1, "growth") > g0, "far behind the leader the human gets the catch-up bonus")
 	check(Rules.DIFFICULTIES[1]["bot_growth"] < 1.0 and Rules.DIFFICULTIES[1]["grace"] >= 90, "normal difficulty favours the human a little")
 	check(Rules.EVENTS.size() >= 50, "plenty of events (%d)" % Rules.EVENTS.size())
+
+
+func test_living_world() -> void:
+	var LivingWorld = preload("res://scripts/sim/living_world.gd")
+	var w = _quiet(99)
+	var f: Dictionary = w.factions[1]
+	f["gold"] = 1000000.0
+	# eras gate the nukes and advance with technology
+	check(w.era == 0 and not w.apply({"type": "research", "player": 1, "tech": "nuclear"})["ok"], "nukes need the modern era")
+	for id in range(1, w.factions.size()):
+		if w.factions[id]["kind"] != w.Kind.CITY:
+			w.factions[id]["tech"] = {"trade": 3, "conscription": 3, "logistics": 3, "fortification": 3, "tactics": 2, "navigation": 2, "irrigation": 2, "medicine": 2}
+	check(LivingWorld.era_for(w) >= 4, "20 tech levels each reach the modern era")
+	var cap0: float = w.max_troops_of(1)
+	for i in LivingWorld.PERIOD_TICKS:
+		w.step()
+	check(w.era >= 4 and w.max_troops_of(1) > cap0 * 1.2, "era advanced and raises the army cap")
+	check(w.apply({"type": "research", "player": 1, "tech": "nuclear"})["ok"], "nukes unlocked in the modern era")
+	# rebels
+	var bot := _first_bot(w, 0)
+	var b: Dictionary = w.factions[bot]
+	var before: int = w.factions.size()
+	var cells0: int = b["cells"]
+	var rid: int = LivingWorld.spawn_rebels(w, bot)
+	check(rid == -1 and w.factions.size() == before, "a tiny country cannot split (too few cells)")
+	# grow the bot artificially: give it a blob of free land around its capital
+	var grown := 0
+	var queue: Array = b["border"].keys()
+	var seen := {}
+	while grown < 400 and not queue.is_empty():
+		var c: int = queue.pop_front()
+		for n in map.neighbors(c):
+			if not seen.has(n) and w.owner[n] == 0 and map.is_land(n):
+				seen[n] = true
+				w._set_owner(n, bot)
+				queue.append(n)
+				grown += 1
+	cells0 = b["cells"]
+	rid = LivingWorld.spawn_rebels(w, bot)
+	check(rid > 0 and w.factions.size() == before + 1, "rebels become a new faction")
+	var r: Dictionary = w.factions[rid]
+	check(r["kind"] == w.Kind.BOT and r["cells"] >= 50 and b["cells"] + r["cells"] == cells0 and not r["border"].is_empty(), "rebels took part of the land with proper borders")
+	check(w.relation_of(rid, bot) < 20.0 and w.ranking().size() == 1 + Rules.NUM_BOTS + 1, "rebels hate their old master and count as a player")
+	for i in 50:
+		w.step()
+	check(r["alive"] and r["troops"] > 0.0, "the new nation lives on")
+	# awakening city-state
+	var city := _first_city_state(w)
+	LivingWorld.awaken(w, city)
+	check(w.factions[city]["kind"] == w.Kind.BOT and w.factions[city]["persona"] in Rules.PERSONA_ORDER, "a city-state becomes a nation")
+	# spectator
+	w.set_spectator(true)
+	check(w.spectating and f["kind"] == w.Kind.BOT, "spectator mode hands the country to the AI")
+	w.set_spectator(false)
+	check(not w.spectating and f["kind"] == w.Kind.HUMAN, "control taken back")
+	# adaptive tuning
+	var g0: float = w.growth_of(bot)
+	w.bot_tuning = 1.5
+	check(w.growth_of(bot) > g0 * 1.4, "bot tuning scales bot growth")
+	w.bot_tuning = 1.0
+	var w2 = World.new(map, 5)
+	w2.persona_weights = {"turtle": 2.5}
+	var turtles := 0
+	for id in range(1, w2.factions.size()):
+		if w2.factions[id]["kind"] == w2.Kind.BOT and w2.factions[id]["persona"] == "turtle":
+			turtles += 1
+	check(turtles >= 1, "persona weights influence who shows up")
+	var Save = preload("res://scripts/sim/save.gd")
+	var w3 = Save.from_dict(map, Save.to_dict(w))
+	check(w3.era == w.era and w3.factions.size() == w.factions.size(), "era and new nations survive a save")
 
 
 func test_ranking_and_names() -> void:

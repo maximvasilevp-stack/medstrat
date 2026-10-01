@@ -70,6 +70,9 @@ func _ready() -> void:
 		if settings != null:
 			world.difficulty = clampi(settings.difficulty, 0, Rules.DIFFICULTIES.size() - 1)
 			world.scenario = settings.scenario
+			world.persona_weights = settings.persona_weights()
+			if settings.adaptive:
+				world.bot_tuning = settings.bot_tuning
 	human = world.human
 	if settings != null and not loaded_from_save:
 		var idx: int = clampi(settings.color_index, 0, Rules.PLAYER_COLORS.size() - 1)
@@ -201,6 +204,19 @@ func _ready() -> void:
 		if fid == human:
 			hud.toast("Чудо света построено: %s" % Rules.WONDERS[key]["name"], Color(1, 0.85, 0.35))
 			_sfx("win"))
+	world.era_changed.connect(func(e):
+		hud.toast("Эпоха: %s — %s" % [Rules.ERAS[e]["name"], Rules.ERAS[e]["desc"]], Color(0.85, 0.75, 1))
+		_sfx("win"))
+	world.faction_born.connect(func(fid, parent):
+		view.set_faction_color(fid, world.factions[fid]["color"])
+		if parent == human:
+			hud.toast("Восстание! От вас отделяется %s" % world.factions[fid]["name"], Color(1, 0.55, 0.45))
+			_sfx("error"))
+	world.spectator_changed.connect(func(on):
+		hud.set_spectating(on)
+		if not on:
+			hud.toast("Вы взяли управление страной", Color(0.75, 1, 0.75)))
+	hud.take_control.connect(func(): world.set_spectator(false))
 	world.catch_up_changed.connect(func(active):
 		hud.toast("Бонус догоняющего: +15%% к росту и золоту, пока вы далеко позади лидера" if active else "Вы догнали лидера: бонус догоняющего снят", Color(0.85, 0.95, 1)))
 	world.news_posted.connect(func(text, kind): hud.news.push(text, kind))
@@ -299,6 +315,14 @@ func _ready() -> void:
 			_on_season_changed(world.season)
 	else:
 		_place_scenario_capital()
+		if settings2 != null and settings2.spectate:
+			settings2.spectate = false
+			if world.phase == world.Phase.SPAWN:
+				world.auto_spawn_human()
+			world.set_spectator(true)
+			camera.zoom_index = 0
+			camera._apply_zoom()
+			camera.center_map()
 	_handle_args()
 
 
@@ -543,7 +567,7 @@ func _profile_text() -> String:
 
 func _check_achievements() -> void:
 	var settings = _settings()
-	if settings == null or world.phase == world.Phase.SPAWN:
+	if settings == null or world.phase == world.Phase.SPAWN or world.spectating:
 		return
 	var fresh: Array = Achievements.check_new(world, human, settings.unlocked)
 	var mult: float = Rules.DIFFICULTIES[world.difficulty]["xp"]
@@ -592,6 +616,8 @@ func _count_result(won: bool) -> String:
 	if settings == null or _result_counted:
 		return ""
 	_result_counted = true
+	if world.spectating:
+		return "Режим наблюдения: опыт не начисляется"
 	var share: float = world.land_share(human)
 	var mult: float = Rules.DIFFICULTIES[world.difficulty]["xp"]
 	var xp: int = int(round((50.0 + share * 400.0 + (150.0 if won else 0.0)) * mult))
@@ -600,6 +626,13 @@ func _count_result(won: bool) -> String:
 	if won:
 		settings.stats["wins"] = int(settings.stats.get("wins", 0)) + 1
 	settings.stats["best_share"] = maxf(float(settings.stats.get("best_share", 0.0)), share)
+	var persona_shares := {}
+	for id in range(1, world.factions.size()):
+		var f: Dictionary = world.factions[id]
+		if f["kind"] == world.Kind.BOT and id != human and f["persona"] != "":
+			persona_shares[f["persona"]] = float(persona_shares.get(f["persona"], 0.0)) + world.land_share(id)
+	if not world.spectating:
+		settings.learn_from_match(won, persona_shares)
 	settings.save()
 	Save.remove()
 	var text := "+%d XP" % xp
@@ -721,8 +754,11 @@ func _handle_args() -> void:
 	var open_gov := -1
 	var open_missions := false
 	var open_autopilot := false
+	var spectate := false
 	for a in OS.get_cmdline_user_args():
-		if a == "--open-missions":
+		if a == "--spectate":
+			spectate = true
+		elif a == "--open-missions":
 			open_missions = true
 		elif a == "--open-autopilot":
 			open_autopilot = true
@@ -744,8 +780,10 @@ func _handle_args() -> void:
 			open_event = true
 		elif a.begins_with("--open-gov="):
 			open_gov = int(a.get_slice("=", 1))
-	if run_ticks > 0 or demo:
+	if run_ticks > 0 or demo or spectate:
 		world.auto_spawn_human()
+	if spectate:
+		world.set_spectator(true)
 	if demo:
 		_run_demo()
 	for i in run_ticks:

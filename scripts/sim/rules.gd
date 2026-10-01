@@ -264,6 +264,16 @@ const PERSONA_TAUNTS := {
 
 # --- catch-up: a human far behind the leader gets a hand
 const CATCH_UP_AFTER := 120.0            # seconds into the match
+## Eras: the world advances with the average technology of all nations ("techs" = levels per nation).
+const ERAS := [
+	{"name": "Античность", "desc": "мир только начинается", "techs": 0, "mods": {}},
+	{"name": "Средневековье", "desc": "+5% к лимиту армии всем", "techs": 3, "mods": {"cap": 1.05}},
+	{"name": "Возрождение", "desc": "+10% к лимиту, +3% золота всем", "techs": 7, "mods": {"cap": 1.10, "gold": 1.03}},
+	{"name": "Индустриальная эпоха", "desc": "+20% к лимиту, +6% золота, фронт быстрее", "techs": 12, "mods": {"cap": 1.20, "gold": 1.06, "attack_rate": 1.05}},
+	{"name": "Современность", "desc": "открывается ядерная программа; +35% к лимиту, +10% золота", "techs": 18, "mods": {"cap": 1.35, "gold": 1.10, "attack_rate": 1.10}},
+	{"name": "Будущее", "desc": "+50% к лимиту, +15% золота, корабли быстрее", "techs": 26, "mods": {"cap": 1.50, "gold": 1.15, "attack_rate": 1.15, "ship_speed": 1.2}},
+]
+const NUCLEAR_ERA := 4                   # nuclear and rocket research need this era
 const CATCH_UP_RATIO := 0.5              # when the human holds less than this share of the leader's land...
 const CATCH_UP_MODS := {"growth": 1.15, "gold": 1.15}   # ...these multipliers apply
 

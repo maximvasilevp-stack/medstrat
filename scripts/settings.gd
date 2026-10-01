@@ -13,6 +13,10 @@ var mobile := false            # small screen: compact HUD layout
 var difficulty := 1            # index into Rules.DIFFICULTIES
 var scenario := "free"         # key in Scenarios.LIST
 var load_save := false         # the game scene should load user://save.bin instead of a new match
+var spectate := false          # start the next match as an observer (the AI runs your country)
+var adaptive := true           # bots get stronger after your wins and weaker after losses
+var bot_tuning := 1.0          # the learned multiplier (0.6 .. 1.5)
+var bot_memory: Dictionary = {}  # persona -> {matches, share_sum}: how each bot character fared
 
 # --- profile
 var xp := 0
@@ -31,6 +35,9 @@ func _ready() -> void:
 		xp = int(cfg.get_value("profile", "xp", xp))
 		unlocked = cfg.get_value("profile", "unlocked", {})
 		stats = cfg.get_value("profile", "stats", stats)
+		adaptive = bool(cfg.get_value("ai", "adaptive", adaptive))
+		bot_tuning = float(cfg.get_value("ai", "bot_tuning", bot_tuning))
+		bot_memory = cfg.get_value("ai", "bot_memory", {})
 	_apply_scaling()
 	get_window().size_changed.connect(_apply_scaling)
 
@@ -45,7 +52,31 @@ func save() -> void:
 	cfg.set_value("profile", "xp", xp)
 	cfg.set_value("profile", "unlocked", unlocked)
 	cfg.set_value("profile", "stats", stats)
+	cfg.set_value("ai", "adaptive", adaptive)
+	cfg.set_value("ai", "bot_tuning", bot_tuning)
+	cfg.set_value("ai", "bot_memory", bot_memory)
 	cfg.save(PATH)
+
+
+## Bots learn between matches: the player's wins make them bolder, losses make them gentler,
+## and the characters that grabbed the most land get picked a little more often.
+func learn_from_match(won: bool, persona_shares: Dictionary) -> void:
+	if adaptive:
+		bot_tuning = clampf(bot_tuning * (1.08 if won else 0.93), 0.6, 1.5)
+	for persona in persona_shares:
+		var m: Dictionary = bot_memory.get(persona, {"matches": 0, "share_sum": 0.0})
+		m["matches"] = int(m["matches"]) + 1
+		m["share_sum"] = float(m["share_sum"]) + float(persona_shares[persona])
+		bot_memory[persona] = m
+
+
+func persona_weights() -> Dictionary:
+	var w := {}
+	for persona in bot_memory:
+		var m: Dictionary = bot_memory[persona]
+		var avg: float = float(m["share_sum"]) / maxf(1.0, float(m["matches"]))
+		w[persona] = 1.0 + clampf(avg * 8.0, 0.0, 1.5)
+	return w
 
 
 # --- profile helpers

@@ -56,8 +56,8 @@ func _ready() -> void:
 		panel.set_anchors_and_offsets_preset(PRESET_CENTER)
 		panel.offset_left = -240
 		panel.offset_right = 240
-		panel.offset_top = -340
-		panel.offset_bottom = 340
+		panel.offset_top = -380
+		panel.offset_bottom = 380
 		add_child(panel)
 		panel.add_child(box)
 	var title := Label.new()
@@ -178,6 +178,18 @@ func _ready() -> void:
 		box.add_child(prof)
 	start.add_theme_stylebox_override("normal", ThemeFactory.pill(ThemeFactory.ORANGE, 8))
 	start.add_theme_stylebox_override("hover", ThemeFactory.pill(ThemeFactory.ORANGE.lightened(0.15), 8))
+	_button(box, "Наблюдать за миром", func():
+		if settings != null:
+			settings.spectate = true
+		get_tree().change_scene_to_file("res://scenes/game.tscn"))
+	if settings != null:
+		var adaptive := CheckBox.new()
+		adaptive.text = "Боты учатся между матчами (сейчас сила ×%.2f)" % settings.bot_tuning
+		adaptive.button_pressed = settings.adaptive
+		adaptive.toggled.connect(func(on):
+			settings.adaptive = on
+			settings.save())
+		box.add_child(adaptive)
 	_button(box, "Как играть", func(): help_panel.visible = not help_panel.visible)
 	sound_check = CheckBox.new()
 	sound_check.text = "Звук"

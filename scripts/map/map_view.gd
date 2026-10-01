@@ -61,5 +61,10 @@ func _process(_delta: float) -> void:
 		scorch_tex.update(scorch_img)
 
 
+func set_faction_color(id: int, color: Color) -> void:
+	palette_img.set_pixel(id, 0, color)
+	palette_tex.update(palette_img)
+
+
 func set_hover_owner(id: int) -> void:
 	mat.set_shader_parameter("hover_owner", id)

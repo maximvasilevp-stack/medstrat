@@ -38,6 +38,7 @@ static func to_dict(world) -> Dictionary:
 		"missiles": world.missiles.duplicate(true), "buildings_at": world.buildings_at.duplicate(true),
 		"scorched": world.scorched.duplicate(true), "scenario": world.scenario,
 		"market": world.market.duplicate(true), "wonders": world.wonders.duplicate(true), "catch_up": world.catch_up,
+		"era": world.era, "spectating": world.spectating, "bot_tuning": world.bot_tuning,
 	}
 
 
@@ -66,6 +67,9 @@ static func from_dict(map, d: Dictionary):
 		w.market = d["market"]
 	w.wonders = d.get("wonders", {})
 	w.catch_up = bool(d.get("catch_up", false))
+	w.era = int(d.get("era", 0))
+	w.spectating = bool(d.get("spectating", false))
+	w.bot_tuning = float(d.get("bot_tuning", 1.0))
 	w.rebuild_borders()
 	w.dirty = true
 	w.scorch_dirty = true

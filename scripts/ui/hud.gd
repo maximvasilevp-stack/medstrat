@@ -51,6 +51,7 @@ signal invest(amount: int)
 signal divest(amount: int)
 signal tariff_changed(level: int)
 signal sanction(target: int, on: bool)
+signal take_control
 signal exit_pressed
 signal attack_size_changed(ratio: float)
 signal cancel_attack(target: int)
@@ -162,6 +163,7 @@ var econ_budget: Label
 var econ_index: Label
 var tariff_buttons: Array = []
 var wonder_rows: Dictionary = {}
+var spectate_button: Button
 var gov_tab_index := 0
 var _tax_syncing := false
 var overlay: Control
@@ -287,6 +289,19 @@ func _build_top() -> void:
 	autopilot_button.tooltip_text = "Клавиша A: советники развивают страну сами"
 	autopilot_button.pressed.connect(toggle_autopilot)
 	row.add_child(autopilot_button)
+	spectate_button = Button.new()
+	spectate_button.text = "Наблюдение · взять управление"
+	spectate_button.custom_minimum_size = Vector2(0, 36)
+	spectate_button.visible = false
+	spectate_button.set_anchors_and_offsets_preset(PRESET_CENTER_TOP)
+	spectate_button.offset_left = -60 if mobile else -150
+	spectate_button.offset_right = 150 if mobile else 150
+	spectate_button.offset_top = 108 if mobile else 68
+	spectate_button.offset_bottom = 144 if mobile else 104
+	spectate_button.add_theme_stylebox_override("normal", ThemeFactory.pill(ThemeFactory.ORANGE, 8))
+	spectate_button.add_theme_stylebox_override("hover", ThemeFactory.pill(ThemeFactory.ORANGE.lightened(0.15), 8))
+	spectate_button.pressed.connect(func(): take_control.emit())
+	add_child(spectate_button)
 	news = NewsFeed.new()
 	news.position = Vector2(12, 58)
 	news.size = Vector2(300, 200)
@@ -1952,6 +1967,10 @@ static func _money(v: float) -> String:
 	return ("%.1f" % v) if absf(v) < 100.0 else Names.short_number(v)
 
 
+func set_spectating(on: bool) -> void:
+	spectate_button.visible = on
+
+
 func _hide_panels() -> void:
 	tech_panel.visible = false
 	people_panel.visible = false
@@ -2077,8 +2096,20 @@ func _diplo_action(act: String, tid: int) -> void:
 
 
 func _refresh_diplomacy(f: Dictionary) -> void:
-	if diplo_rows.is_empty():
+	var bots := 0
+	for id in range(1, world.factions.size()):
+		if id != human and world.factions[id]["kind"] == world.Kind.BOT:
+			bots += 1
+	if diplo_rows.size() != bots:
+		for c in diplo_box.get_children():
+			c.queue_free()
+		diplo_rows.clear()
 		_build_diplo_rows()
+		if spy_target != null:
+			for id in range(1, world.factions.size()):
+				var o: Dictionary = world.factions[id]
+				if id != human and o["kind"] == world.Kind.BOT and spy_target.get_item_index(id) == -1:
+					spy_target.add_item(o["name"], id)
 	var attackers := {}
 	for a in world.incoming_attacks(human):
 		attackers[a["attacker"]] = true
@@ -2318,7 +2349,7 @@ func refresh(delta: float) -> void:
 			timer_label.text = "Вы выбыли · лидер %s: %.1f%%" % [world.factions[lead]["name"], world.land_share(lead) * 100.0]
 		var sd: Dictionary = Rules.SEASONS[world.season]
 		var left: int = Rules.SEASON_SECONDS - int(world.seconds()) % Rules.SEASON_SECONDS
-		season_label.text = "%s · %s · %d с" % [sd["name"], sd["desc"], left] + (" · бонус догоняющего +15%" if world.catch_up else "")
+		season_label.text = "%s · %s · %d с · эпоха: %s" % [sd["name"], sd["desc"], left, Rules.ERAS[world.era]["name"]] + (" · бонус догоняющего +15%" if world.catch_up else "")
 
 	var cap: float = world.max_troops_of(human)
 	army_value.text = Names.short_number(f["troops"])
