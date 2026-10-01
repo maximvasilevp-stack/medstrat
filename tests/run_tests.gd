@@ -48,6 +48,7 @@ func _init() -> void:
 	test_economy()
 	test_economy_two()
 	test_victory_lead()
+	test_wonders_and_catch_up()
 	test_ranking_and_names()
 	test_determinism()
 	test_soak()
@@ -1069,6 +1070,41 @@ func test_victory_lead() -> void:
 	check(w.phase == w.Phase.FINISHED and w.winner_declared == 1, "a minute of undisputed lead wins the match")
 	w.resume()
 	f["cells"] = cells0
+
+
+func test_wonders_and_catch_up() -> void:
+	var w = _quiet(98)
+	var f: Dictionary = w.factions[1]
+	f["gold"] = 1000000.0
+	var spawn: int = f["spawn"]
+	check(absi(w.building_cost("great_library", 1) - int(Rules.WONDERS["great_library"]["cost"] * w.mod(1, "build_cost") * w.price_level(1))) <= 1, "wonder has a price")
+	var tc0: int = w.tech_cost(1, "trade")
+	check(w.apply({"type": "build", "player": 1, "kind": "great_library", "cell": spawn})["ok"] and w.wonders["great_library"] == 1 and f["wonders"]["great_library"], "wonder built and owned")
+	check(w.tech_cost(1, "trade") < tc0 and w.compute_seats(1)["tech"] > 0, "wonder bonus applies")
+	var bot := _first_bot(w, 0)
+	var b: Dictionary = w.factions[bot]
+	b["gold"] = 1000000.0
+	var bcell: int = b["border"].keys()[0]
+	check(not w.apply({"type": "build", "player": bot, "kind": "great_library", "cell": bcell})["ok"], "a wonder exists once in the world")
+	w._set_owner(spawn, bot)
+	check(w.wonders["great_library"] == bot and not f["wonders"].has("great_library") and b["wonders"]["great_library"] and w.buildings_at[spawn]["faction"] == bot, "capturing the cell takes the wonder")
+	check(w.tech_cost(1, "trade") == tc0, "the old owner loses the bonus")
+	w._set_owner(spawn, 1)
+	w._set_owner(spawn, 0)
+	check(not w.wonders.has("great_library"), "a wonder on nobody's land is destroyed")
+	check(Rules.WONDER_ORDER.size() == Rules.WONDERS.size() and Rules.WONDERS.size() >= 10, "ten wonders")
+	for key in Rules.WONDERS:
+		check(Rules.PARTIES.has(Rules.WONDERS[key]["party"]), "wonder %s pleases a real party" % key)
+	# catch-up
+	check(not w.catch_up, "no catch-up at the start")
+	w.match_start_tick = w.tick - int(Rules.CATCH_UP_AFTER * Rules.TICKS_PER_SEC) - 10
+	var g0: float = w.mod(1, "growth")
+	b["cells"] = f["cells"] * 10
+	for i in Rules.TICKS_PER_SEC:
+		w.step()
+	check(w.catch_up and w.mod(1, "growth") > g0, "far behind the leader the human gets the catch-up bonus")
+	check(Rules.DIFFICULTIES[1]["bot_growth"] < 1.0 and Rules.DIFFICULTIES[1]["grace"] >= 90, "normal difficulty favours the human a little")
+	check(Rules.EVENTS.size() >= 50, "plenty of events (%d)" % Rules.EVENTS.size())
 
 
 func test_ranking_and_names() -> void:

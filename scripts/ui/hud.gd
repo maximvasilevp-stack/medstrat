@@ -161,6 +161,7 @@ var econ_people: Label
 var econ_budget: Label
 var econ_index: Label
 var tariff_buttons: Array = []
+var wonder_rows: Dictionary = {}
 var gov_tab_index := 0
 var _tax_syncing := false
 var overlay: Control
@@ -1032,6 +1033,30 @@ func _build_gov_panel() -> void:
 		row.add_child(b)
 		project_rows[key] = {"button": b, "bar": bar, "name": name}
 
+	# --- wonders of the world (in the projects tab)
+	projects.add_child(_label("ЧУДЕСА СВЕТА", 14))
+	projects.add_child(_label("Каждое чудо существует в мире в одном экземпляре: кто первый построил, тот и владеет. Чудо стоит на клетке, захватите её — заберёте чудо.", 11, ThemeFactory.TEXT_DIM))
+	for key in Rules.WONDER_ORDER:
+		var wd: Dictionary = Rules.WONDERS[key]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		projects.add_child(row)
+		var text := VBoxContainer.new()
+		text.size_flags_horizontal = SIZE_EXPAND_FILL
+		text.add_theme_constant_override("separation", 0)
+		row.add_child(text)
+		var name := _wrap(_label(wd["name"], 14))
+		text.add_child(name)
+		text.add_child(_label("%s · %s золота" % [wd["desc"], Names.short_number(wd["cost"])], 11, ThemeFactory.TEXT_DIM))
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(120 if mobile else 170, 34)
+		var wk: String = key
+		b.pressed.connect(func():
+			gov_panel.visible = false
+			mode_selected.emit(wk))
+		row.add_child(b)
+		wonder_rows[key] = {"button": b, "name": name}
+
 	# --- diplomacy
 	var diplo: VBoxContainer = gov_pages[7]
 	diplo.add_child(_label("Подарки поднимают отношения, нападения роняют их, со временем всё возвращается к 50. Соперник с отношениями от %d согласится на пакт о ненападении на %d с: ни он, ни вы не сможете атаковать друг друга. Боты реже нападают на тех, кого любят." % [int(Rules.PACT_MIN_RELATION), Rules.PACT_SECONDS], 11, ThemeFactory.TEXT_DIM))
@@ -1464,6 +1489,19 @@ func _refresh_gov() -> void:
 					var cost: int = int(round(p["cost"] * world.mod(human, "build_cost")))
 					b.text = "Начать · " + Names.short_number(cost)
 					b.disabled = f["gold"] < cost or active >= Rules.PROJECT_MAX_ACTIVE
+			for key in wonder_rows:
+				var r: Dictionary = wonder_rows[key]
+				var wd: Dictionary = Rules.WONDERS[key]
+				if world.wonders.has(key):
+					var owner_id: int = world.wonders[key]
+					r["name"].text = wd["name"] + (" ✓ ваше" if owner_id == human else " · у %s" % world.factions[owner_id]["name"])
+					r["button"].text = "Построено"
+					r["button"].disabled = true
+				else:
+					r["name"].text = wd["name"]
+					var cost: int = world.building_cost(key, human)
+					r["button"].text = "Построить · " + Names.short_number(cost)
+					r["button"].disabled = f["gold"] < cost
 		7:
 			_refresh_diplomacy(f)
 		8:
@@ -2272,7 +2310,7 @@ func refresh(delta: float) -> void:
 			timer_label.text = "Вы выбыли · лидер %s: %.1f%%" % [world.factions[lead]["name"], world.land_share(lead) * 100.0]
 		var sd: Dictionary = Rules.SEASONS[world.season]
 		var left: int = Rules.SEASON_SECONDS - int(world.seconds()) % Rules.SEASON_SECONDS
-		season_label.text = "%s · %s · %d с" % [sd["name"], sd["desc"], left]
+		season_label.text = "%s · %s · %d с" % [sd["name"], sd["desc"], left] + (" · бонус догоняющего +15%" if world.catch_up else "")
 
 	var cap: float = world.max_troops_of(human)
 	army_value.text = Names.short_number(f["troops"])

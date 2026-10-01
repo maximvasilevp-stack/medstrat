@@ -2,6 +2,7 @@ extends Node2D
 ## Sprites for buildings, driven by World signals.
 
 const PixelSprites := preload("res://scripts/map/pixel_sprites.gd")
+const Rules := preload("res://scripts/sim/rules.gd")
 
 var map
 var world
@@ -33,6 +34,8 @@ func _on_building_placed(_faction_id: int, kind: String, cell: int) -> void:
 			rows = PixelSprites.BUNKER
 		"university", "lab":
 			rows = PixelSprites.LAB
+	if Rules.WONDERS.has(kind):
+		rows = PixelSprites.WONDER
 	var s := Sprite2D.new()
 	s.texture = PixelSprites.texture(rows, kind)
 	s.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST

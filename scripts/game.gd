@@ -197,6 +197,12 @@ func _ready() -> void:
 			hud.toast("Чужие агенты: %s" % text, Color(1, 0.7, 0.4))
 			_sfx("error", -4.0))
 	world.mission_done.connect(_on_mission_done)
+	world.wonder_built.connect(func(fid, key):
+		if fid == human:
+			hud.toast("Чудо света построено: %s" % Rules.WONDERS[key]["name"], Color(1, 0.85, 0.35))
+			_sfx("win"))
+	world.catch_up_changed.connect(func(active):
+		hud.toast("Бонус догоняющего: +15%% к росту и золоту, пока вы далеко позади лидера" if active else "Вы догнали лидера: бонус догоняющего снят", Color(0.85, 0.95, 1)))
 	world.news_posted.connect(func(text, kind): hud.news.push(text, kind))
 	world.bill_repealed.connect(func(fid, key):
 		if fid == human:
@@ -612,7 +618,10 @@ func _on_attack_launched(fid: int, target: int, _cell: int, troops: float) -> vo
 	if fid == human:
 		_sfx("attack")
 	elif target == human:
-		hud.toast("%s атакует вас: %s войск" % [world.factions[fid]["name"], Names.short_number(troops)], Color(1, 0.55, 0.45))
+		var f: Dictionary = world.factions[fid]
+		hud.toast("%s атакует вас: %s войск" % [f["name"], Names.short_number(troops)], Color(1, 0.55, 0.45))
+		var lines: Array = Rules.PERSONA_TAUNTS.get(f["persona"], Rules.PERSONA_TAUNTS["trader"])
+		hud.news.push("%s: «%s»" % [f["name"], lines[world.rng.randi_range(0, lines.size() - 1)]], "war")
 		_sfx("attack", -4.0, 0.5)
 
 
@@ -657,7 +666,7 @@ func _on_tech_researched(fid: int, key: String, level: int) -> void:
 func _on_building_placed(fid: int, kind: String, _cell: int) -> void:
 	if fid == human:
 		var names := {"city": "Город", "port": "Порт", "defense": "Защита", "market": "Рынок", "barracks": "Казармы", "bunker": "Бункер"}
-		var label: String = names.get(kind, Rules.BUILDINGS[kind]["name"] if Rules.BUILDINGS.has(kind) else kind)
+		var label: String = names.get(kind, Rules.BUILDINGS[kind]["name"] if Rules.BUILDINGS.has(kind) else (Rules.WONDERS[kind]["name"] if Rules.WONDERS.has(kind) else kind))
 		hud.toast("%s: построено" % label, Color(0.75, 1, 0.75))
 		_sfx("build")
 

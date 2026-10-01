@@ -86,6 +86,8 @@ signal spy_result(faction_id: int, target: int, op: String, success: bool, text:
 signal mission_done(faction_id: int, mission: Dictionary)
 signal news_posted(text: String, kind: String)
 signal economy_event(faction_id: int, text: String)
+signal wonder_built(faction_id: int, wonder: String)
+signal catch_up_changed(active: bool)
 
 var map
 var rng := RandomNumberGenerator.new()
@@ -109,6 +111,8 @@ var heat_dirty := false
 var scorch_dirty := false
 var winner_declared: int = 0          # faction that already triggered match_finished (the match may go on)
 var lead_since: int = -1              # tick since the current leader has been undisputed
+var wonders: Dictionary = {}          # wonder key -> faction that owns it
+var catch_up := false                 # the human is far behind and gets Rules.CATCH_UP_MODS
 var season: int = 0                   # index into Rules.SEASONS
 var difficulty: int = 1               # index into Rules.DIFFICULTIES
 var scenario: String = "free"        # key in Scenarios.LIST
@@ -193,7 +197,7 @@ func _new_faction(name: String, color: Color, kind: int) -> Dictionary:
 		"staff": {}, "seats": {}, "ruling": "", "agitation": {}, "bills": {}, "extra": {}, "budget": {},
 		"reforms": _default_reforms(), "projects": {}, "projects_done": {}, "relations": {}, "pacts": {},
 		"res": {}, "counters": {}, "trade": {}, "allies": {}, "vassals": {}, "overlord": 0, "persona": "",
-		"missions": [], "spy_cd": 0, "autopilot": {}, "econ": Economy.new_state(), "sanctions": {},
+		"missions": [], "spy_cd": 0, "autopilot": {}, "econ": Economy.new_state(), "sanctions": {}, "wonders": {},
 		"mods": {}, "mods_dirty": true,
 		"history": {"gold": PackedFloat32Array(), "troops": PackedFloat32Array(), "cells": PackedFloat32Array(),
 			"approval": PackedFloat32Array(), "income": PackedFloat32Array(), "gdp": PackedFloat32Array(),
@@ -340,7 +344,10 @@ func _set_owner(i: int, new_owner: int) -> void:
 		fo["sum_y"] -= c.y
 		fo["border"].erase(i)
 		if buildings_at.has(i):
-			_remove_building(i)
+			if new_owner != 0 and Rules.WONDERS.has(buildings_at[i]["kind"]):
+				_transfer_wonder(i, new_owner)
+			else:
+				_remove_building(i)
 		if map.resources[i] != 0:
 			var k: int = map.resources[i]
 			fo["res"][k] = int(fo["res"].get(k, 0)) - 1
@@ -381,9 +388,28 @@ func _refresh_border(i: int) -> void:
 		b.erase(i)
 
 
+func _transfer_wonder(cell: int, new_owner: int) -> void:
+	var b: Dictionary = buildings_at[cell]
+	var key: String = b["kind"]
+	var old: Dictionary = factions[b["faction"]]
+	old["wonders"].erase(key)
+	old["mods_dirty"] = true
+	b["faction"] = new_owner
+	factions[new_owner]["wonders"][key] = true
+	factions[new_owner]["mods_dirty"] = true
+	wonders[key] = new_owner
+	_news("%s захватывает чудо света: %s" % [factions[new_owner]["name"], Rules.WONDERS[key]["name"]], "war")
+
+
 func _remove_building(cell: int) -> void:
 	var b: Dictionary = buildings_at[cell]
 	var f: Dictionary = factions[b["faction"]]
+	if Rules.WONDERS.has(b["kind"]):
+		f["wonders"].erase(b["kind"])
+		wonders.erase(b["kind"])
+		f["mods_dirty"] = true
+		buildings_at.erase(cell)
+		return
 	match b["kind"]:
 		"city":
 			f["cities"] -= 1
@@ -467,6 +493,11 @@ func mods_of(fid: int) -> Dictionary:
 	if f["kind"] != Kind.CITY:
 		Content.merge_mods(m, Rules.SEASONS[season]["mods"])
 		Content.merge_mods(m, Economy.mods(f))
+	for key in f["wonders"]:
+		if f["wonders"][key]:
+			Content.merge_mods(m, Rules.WONDERS[key]["mods"])
+	if fid == human and catch_up:
+		Content.merge_mods(m, Rules.CATCH_UP_MODS)
 	f["mods"] = m
 	f["mods_dirty"] = false
 	return m
@@ -604,6 +635,9 @@ func compute_seats(fid: int) -> Dictionary:
 		var n: int = extra[key]
 		if n > 0 and Rules.BUILDINGS.has(key):
 			w[Rules.BUILDINGS[key]["party"]] += n * 3.0
+	for key in f["wonders"]:
+		if f["wonders"][key]:
+			w[Rules.WONDERS[key]["party"]] += 5.0
 	for key in f["bills"]:
 		if f["bills"][key]:
 			for party in Rules.BILLS[key]["support"]:
@@ -1098,11 +1132,22 @@ func _politics_second() -> void:
 		_advance_projects(id)
 		_drift_relations(id)
 	_check_missions()
+	_update_catch_up()
 	var h: Dictionary = factions[human]
 	if h["alive"] and h["event"].is_empty() and tick >= h["next_event"]:
 		_offer_event()
 	elif not h["event"].is_empty() and tick >= h["event_until"]:
 		_resolve_event(human, 0)
+
+
+func _update_catch_up() -> void:
+	var h: Dictionary = factions[human]
+	var lead := leader()
+	var active: bool = h["alive"] and seconds() >= Rules.CATCH_UP_AFTER and lead != human and land_share(human) < land_share(lead) * Rules.CATCH_UP_RATIO
+	if active != catch_up:
+		catch_up = active
+		h["mods_dirty"] = true
+		catch_up_changed.emit(active)
 
 
 func _check_missions() -> void:
@@ -1491,6 +1536,8 @@ func building_cost(kind: String, fid: int = 0) -> int:
 				base = Rules.BUILDINGS[kind]["cost"]
 				if fid > 0:
 					owned = int(factions[fid]["extra"].get(kind, 0))
+			elif Rules.WONDERS.has(kind):
+				base = Rules.WONDERS[kind]["cost"]
 	var cost := base * (1.0 + Rules.COST_ESCALATION * owned)
 	if fid > 0:
 		cost *= mod(fid, "build_cost") * price_level(fid)
@@ -1551,9 +1598,24 @@ func _apply(a: Dictionary) -> String:
 				return "Порт строится на берегу моря"
 			if Rules.BUILDINGS.has(kind) and Rules.BUILDINGS[kind]["coast"] and not map.is_coast(c):
 				return "%s строится на берегу моря" % Rules.BUILDINGS[kind]["name"]
+			if Rules.WONDERS.has(kind):
+				if wonders.has(kind):
+					return "%s уже построен: %s" % [Rules.WONDERS[kind]["name"], factions[wonders[kind]]["name"]]
+				if Rules.WONDERS[kind]["coast"] and not map.is_coast(c):
+					return "%s строится на берегу моря" % Rules.WONDERS[kind]["name"]
 			if f["gold"] < cost:
 				return "Не хватает золота (нужно %s)" % Names.short_number(cost)
 			f["gold"] -= cost
+			if Rules.WONDERS.has(kind):
+				f["wonders"][kind] = true
+				wonders[kind] = fid
+				f["mods_dirty"] = true
+				buildings_at[c] = {"faction": fid, "kind": kind}
+				building_placed.emit(fid, kind, c)
+				_count(fid, "wonders")
+				wonder_built.emit(fid, kind)
+				_news("%s строит чудо света: %s" % [f["name"], Rules.WONDERS[kind]["name"]], "world")
+				return ""
 			match kind:
 				"city":
 					f["cities"] += 1

@@ -88,6 +88,12 @@ static func manage_laws(world, fid: int, p: Dictionary) -> void:
 		var axis: String = Rules.REFORM_ORDER[world.rng.randi_range(0, Rules.REFORM_ORDER.size() - 1)]
 		var options: Array = Rules.REFORMS[axis]["options"].keys()
 		world.apply({"type": "reform", "player": fid, "axis": axis, "option": options[world.rng.randi_range(0, options.size() - 1)]})
+	if f["cells"] > 2500 and world.rng.randf() < 0.04 * p["build"]:
+		var wkey: String = Rules.WONDER_ORDER[world.rng.randi_range(0, Rules.WONDER_ORDER.size() - 1)]
+		if not world.wonders.has(wkey) and f["gold"] >= world.building_cost(wkey, fid) * 2:
+			var cell := _random_border(world, f["border"])
+			if not Rules.WONDERS[wkey]["coast"] or world.map.is_coast(cell):
+				world.apply({"type": "build", "player": fid, "kind": wkey, "cell": cell})
 	if f["cells"] > 800 and world.rng.randf() < 0.05 * p["build"] and f["gold"] > 8000.0:
 		var item: String = Rules.BUDGET_ORDER[world.rng.randi_range(0, Rules.BUDGET_ORDER.size() - 1)]
 		var level: int = int(f["budget"].get(item, 0))

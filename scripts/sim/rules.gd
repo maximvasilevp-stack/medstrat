@@ -239,10 +239,10 @@ const BOT_RATIO_RETALIATE := 0.4
 const BOT_NUKE_CHANCE := 0.25            # per decision, when a nuke is affordable and a big neighbour exists
 const BOT_NAVAL_CHANCE := 0.5
 const DIFFICULTIES := [
-	{"name": "Лёгкая", "desc": "Боты растут медленнее, первые 2 минуты вас не трогают", "bot_growth": 0.75, "bot_gold": 0.75, "grace": 120, "xp": 0.6},
-	{"name": "Обычная", "desc": "Честный матч", "bot_growth": 1.0, "bot_gold": 1.0, "grace": 60, "xp": 1.0},
-	{"name": "Сложная", "desc": "Боты на 25% сильнее и нападают раньше", "bot_growth": 1.25, "bot_gold": 1.3, "grace": 30, "xp": 1.5},
-	{"name": "Кошмар", "desc": "Боты на 60% сильнее, пощады нет с первой секунды", "bot_growth": 1.6, "bot_gold": 1.7, "grace": 0, "xp": 2.5},
+	{"name": "Лёгкая", "desc": "Боты вдвое слабее, первые 3 минуты вас не трогают", "bot_growth": 0.55, "bot_gold": 0.6, "grace": 180, "xp": 0.6},
+	{"name": "Обычная", "desc": "Боты чуть слабее вас, полторы минуты не нападают", "bot_growth": 0.8, "bot_gold": 0.85, "grace": 90, "xp": 1.0},
+	{"name": "Сложная", "desc": "Боты равны вам и нападают через 45 с", "bot_growth": 1.0, "bot_gold": 1.05, "grace": 45, "xp": 1.5},
+	{"name": "Кошмар", "desc": "Боты на 40% сильнее, пощады нет с первой секунды", "bot_growth": 1.4, "bot_gold": 1.5, "grace": 0, "xp": 2.5},
 ]
 ## Bot personalities: multipliers on appetite. enemy_share = troop share before attacking someone,
 ## ratio = share of the army sent, nuke/build/naval scale chances, defense_max = defense levels built.
@@ -254,6 +254,33 @@ const PERSONAS := {
 	"schemer": {"name": "интриган", "desc": "бомбы, шпионы и подкуп", "enemy_share": 0.55, "ratio": 0.6, "nuke": 2.0, "build": 1.0, "naval": 0.5, "defense_max": 3, "retaliate": 1.0},
 }
 const PERSONA_ORDER := ["aggressor", "trader", "turtle", "explorer", "schemer"]
+const PERSONA_TAUNTS := {
+	"aggressor": ["Твои земли будут моими!", "Сопротивление бесполезно.", "Я иду за тобой."],
+	"trader": ["Ничего личного, это бизнес.", "Твои порты мне пригодятся.", "Сделка отменяется."],
+	"turtle": ["Ты подошёл слишком близко.", "Это оборонительная операция.", "Больше так не делай."],
+	"explorer": ["Море привело меня к тебе.", "Новые берега зовут.", "Высадка начинается!"],
+	"schemer": ["Всё идёт по плану.", "Ты даже не заметил, как это началось.", "Шах и мат."],
+}
+
+# --- catch-up: a human far behind the leader gets a hand
+const CATCH_UP_AFTER := 120.0            # seconds into the match
+const CATCH_UP_RATIO := 0.5              # when the human holds less than this share of the leader's land...
+const CATCH_UP_MODS := {"growth": 1.15, "gold": 1.15}   # ...these multipliers apply
+
+## Wonders of the world: unique, one per world, the first to build it keeps it (capturing the cell takes it over).
+const WONDERS := {
+	"pyramids": {"name": "Пирамиды", "desc": "+10% к лимиту армии, +3 одобрение", "cost": 15000, "coast": false, "party": "empire", "mods": {"cap": 1.10, "approval": 3.0}},
+	"colossus": {"name": "Колосс", "desc": "Корабли на 25% быстрее и дальше (на берегу)", "cost": 14000, "coast": true, "party": "trade", "mods": {"ship_speed": 1.25, "naval_reach": 1.25}},
+	"great_library": {"name": "Великая библиотека", "desc": "Технологии на 20% дешевле", "cost": 16000, "coast": false, "party": "tech", "mods": {"tech_cost": 0.80}},
+	"colosseum": {"name": "Колизей", "desc": "+8 одобрение, +5 на выборах", "cost": 15000, "coast": false, "party": "people", "mods": {"approval": 8.0, "election": 5.0}},
+	"pharos": {"name": "Александрийский маяк", "desc": "+6% золота, корабли на 15% дальше (на берегу)", "cost": 13000, "coast": true, "party": "trade", "mods": {"gold": 1.06, "naval_reach": 1.15}},
+	"gardens": {"name": "Висячие сады", "desc": "+8% роста армии, +4 одобрение", "cost": 15000, "coast": false, "party": "green", "mods": {"growth": 1.08, "approval": 4.0}},
+	"artemis": {"name": "Храм Артемиды", "desc": "+6 одобрение, волнения намного позже", "cost": 12000, "coast": false, "party": "people", "mods": {"approval": 6.0, "unrest": -6.0}},
+	"mausoleum": {"name": "Мавзолей", "desc": "+6 на выборах, зарплаты на 10% меньше", "cost": 12000, "coast": false, "party": "order", "mods": {"election": 6.0, "salary_mult": 0.9}},
+	"oracle": {"name": "Оракул", "desc": "Отношения со всеми +10, боты нападают реже", "cost": 13000, "coast": false, "party": "green", "mods": {"relation": 10.0, "diplomacy": 0.5}},
+	"forge": {"name": "Кузница богов", "desc": "+15% к защите, фронт на 10% быстрее", "cost": 18000, "coast": false, "party": "order", "mods": {"defense": 1.15, "attack_rate": 1.10}},
+}
+const WONDER_ORDER := ["pyramids", "colossus", "great_library", "colosseum", "pharos", "gardens", "artemis", "mausoleum", "oracle", "forge"]
 
 # --- diplomacy 2: trade, alliances, vassals, espionage
 const TRADE_COST := 1500

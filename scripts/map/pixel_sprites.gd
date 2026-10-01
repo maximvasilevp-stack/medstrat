@@ -17,6 +17,16 @@ const PALETTE := {
 	"b": Color(0.35, 0.55, 0.85),  # blue
 }
 
+const WONDER := [
+	"...y...",
+	"..yyy..",
+	".yygyy.",
+	".yygyy.",
+	"yyygyyy",
+	"yygggyy",
+	"ddddddd",
+]
+
 const CITY := [
 	"t.....t",
 	"tt.r.tt",
