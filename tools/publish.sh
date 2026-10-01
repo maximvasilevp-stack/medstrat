@@ -18,7 +18,7 @@ cloudflared tunnel --url http://localhost:$PORT > "$LOG" 2>&1 &
 TUN=$!
 url=""
 for i in {1..60}; do
-  url=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$LOG" | head -1)
+  url=$(grep -a -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$LOG" | head -1)
   [ -n "$url" ] && break
   sleep 1
 done
